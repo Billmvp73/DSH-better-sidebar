@@ -462,7 +462,6 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
   // pointer up (clamping + persistence).
   const panelRef = useRef<HTMLDivElement | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
-  const cornerRef = useRef<HTMLDivElement | null>(null)
   const widthDrag = useRef({ startX: 0, startWidth: 0 })
   const [draggingWidth, setDraggingWidth] = useState(false)
   const bottomDrag = useRef({ startY: 0, startHeight: 0 })
@@ -501,10 +500,10 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
     bottomRef.current?.style.setProperty('right', `${(window.innerWidth - centerRect.right) + (width - (state?.width ?? 0))}px`)
     document.documentElement.style.setProperty('--dsh-sidebar-width', `${width}px`)
     document.documentElement.style.setProperty('--dsh-sidebar-height', `${height}px`)
-    if (cornerRef.current !== null) {
-      cornerRef.current.style.left = `${window.innerWidth - width - 6}px`
-      cornerRef.current.style.top = `${window.innerHeight - height - 6}px`
-    }
+    // The corner handle positions itself relative to the panel (CSS
+    // `bottom: calc(var(--dsh-sidebar-height) + 6px)`), so these two layout
+    // variables are all it needs — no viewport coordinates written here
+    // (issue #106: skins that inset the panels must not fight JS coords).
   }
 
   // Drags write at most once per frame: pointer events fire several times
@@ -734,7 +733,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
         right end it really squeezes (the strip reserves its width via CSS),
         so the tabs genuinely yield space to it.
       */}
-      <div className={css.toggleCluster}>
+      <div className={css.toggleCluster} data-bs-toggle-cluster="">
         {/*
           Narrow viewports merge the two workbenches into the one drawer —
           there is no bottom panel, so its toggle button is not offered.
@@ -775,11 +774,13 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
         ref={panelRef}
         className={clsx(css.panel, !state.panelOpen && css.panelHidden)}
         style={{ width: narrow ? '100vw' : Math.min(state.width, window.innerWidth) }}
+        data-bs-panel="right"
         data-dragging={anyDragging || undefined}
       >
           {!narrow && (
             <div
               className={clsx(css.panelResize, draggingWidth && css.panelResizeActive)}
+              data-bs-resize-strip="width"
               onPointerDown={(event) => {
                 event.preventDefault()
                 event.currentTarget.setPointerCapture(event.pointerId)
@@ -814,6 +815,51 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
             getTabBadge={tabBadgeOf}
           />
         </div>
+        {/*
+          The shared corner (only while BOTH panels are open): the
+          intersection of the right panel's left edge and the bottom panel's
+          top edge. Horizontal drags resize the right panel's width, vertical
+          drags the bottom panel's height — the two panels drag against each
+          other. Rendered INSIDE the right panel and positioned by CSS
+          relative to it (left edge + the bottom panel's height via the
+          --dsh-sidebar-height layout variable), so floating-card skins that
+          inset the panels keep the handle glued to the seam — no
+          JS-written viewport coordinates (issue #106). (Never on narrow
+          viewports: the bottom panel does not exist there.)
+        */}
+        {!narrow && state.panelOpen && state.bottomOpen && (
+          <div
+            className={css['corner-handle']}
+            data-bs-corner-handle=""
+            data-dragging={draggingCorner || undefined}
+            onPointerDown={(event) => {
+              event.preventDefault()
+              event.currentTarget.setPointerCapture(event.pointerId)
+              cornerDrag.current = {
+                startX: event.clientX,
+                startY: event.clientY,
+                startWidth: state.width,
+                startHeight: state.bottomHeight,
+              }
+              setDraggingCorner(true)
+            }}
+            onPointerMove={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+              const { startX, startY, startWidth, startHeight } = cornerDrag.current
+              const width = clampWidth(startWidth + (startX - event.clientX))
+              const height = clampHeight(startHeight + (startY - event.clientY))
+              scheduleDrag(width, height)
+            }}
+            onPointerUp={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+              event.currentTarget.releasePointerCapture(event.pointerId)
+              const { startX, startY, startWidth, startHeight } = cornerDrag.current
+              stopDragScheduling()
+              store.reduce(s => setBottomHeight(setWidth(s, startWidth + (startX - event.clientX)), startHeight + (startY - event.clientY)))
+              setDraggingCorner(false)
+            }}
+          />
+        )}
       </div>
       {/*
         The bottom panel: a second, independent workbench. It squeezes ONLY
@@ -827,7 +873,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
       {!narrow && (
       <div
         ref={bottomRef}
-        className={clsx(css.bottomPanel, !state.bottomOpen && css.bottomPanelHidden)}
+        className={clsx(css['bottom-panel'], !state.bottomOpen && css['bottom-panel-hidden'])}
         style={{
           height: Math.min(state.bottomHeight, window.innerHeight),
           left: centerRect.left,
@@ -842,10 +888,12 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
           // fill — without it the corner looks cut off).
           borderRight: state.panelOpen ? '1px solid var(--dsw-alias-border-l2)' : undefined,
         }}
+        data-bs-panel="bottom"
         data-dragging={(draggingBottom || draggingCorner) || undefined}
       >
         <div
-          className={clsx(css.bottomResize, draggingBottom && css.bottomResizeActive)}
+          className={clsx(css['bottom-resize'], draggingBottom && css['bottom-resize-active'])}
+          data-bs-resize-strip="height"
           onPointerDown={(event) => {
             event.preventDefault()
             event.currentTarget.setPointerCapture(event.pointerId)
@@ -875,7 +923,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
         <Tooltip label={t('collapseBottomPanel')} side="bottom" delayMs={500}>
           <button
             type="button"
-            className={css.bottomClose}
+            className={css['bottom-close']}
             aria-label={t('collapseBottomPanel')}
             onClick={() => { store.reduce(toggleBottomPanel) }}
           >
@@ -895,50 +943,6 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
           />
         </div>
       </div>
-      )}
-      {/*
-        The shared corner (only while BOTH panels are open): the intersection
-        of the right panel's left edge and the bottom panel's top edge.
-        Horizontal drags resize the right panel's width, vertical drags the
-        bottom panel's height — the two panels drag against each other.
-        (Never on narrow viewports: the bottom panel does not exist there.)
-      */}
-      {!narrow && state.panelOpen && state.bottomOpen && (
-        <div
-          ref={cornerRef}
-          className={css.cornerHandle}
-          style={{
-            left: window.innerWidth - state.width - 6,
-            top: window.innerHeight - state.bottomHeight - 6,
-          }}
-          data-dragging={draggingCorner || undefined}
-          onPointerDown={(event) => {
-            event.preventDefault()
-            event.currentTarget.setPointerCapture(event.pointerId)
-            cornerDrag.current = {
-              startX: event.clientX,
-              startY: event.clientY,
-              startWidth: state.width,
-              startHeight: state.bottomHeight,
-            }
-            setDraggingCorner(true)
-          }}
-          onPointerMove={(event) => {
-            if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
-            const { startX, startY, startWidth, startHeight } = cornerDrag.current
-            const width = clampWidth(startWidth + (startX - event.clientX))
-            const height = clampHeight(startHeight + (startY - event.clientY))
-            scheduleDrag(width, height)
-          }}
-          onPointerUp={(event) => {
-            if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
-            event.currentTarget.releasePointerCapture(event.pointerId)
-            const { startX, startY, startWidth, startHeight } = cornerDrag.current
-            stopDragScheduling()
-            store.reduce(s => setBottomHeight(setWidth(s, startWidth + (startX - event.clientX)), startHeight + (startY - event.clientY)))
-            setDraggingCorner(false)
-          }}
-        />
       )}
     </>
   )

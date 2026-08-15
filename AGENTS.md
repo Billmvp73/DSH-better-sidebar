@@ -560,7 +560,43 @@ interface OpenTabSeed {
 
 ---
 
-## 8. 完整最小示例
+## 8. 皮肤/主题适配契约（供主题/皮肤插件作者）
+
+> 本仓库的侧边栏是**主题插件友好**的：所有视觉值都消费 DSH 的 `--dsw-alias-*` / `--dsw-font-*` / `--ds-*` 令牌（无硬编码颜色），并以稳定锚点暴露表面。第三方皮肤插件（如玻璃拟态、角色皮肤）按本节契约覆盖即可，**不要**依赖哈希类名。契约由 `tests/skin-hooks.spec.tsx`（jsdom 结构断言）与 `tests/e2e/mount.e2e.ts`（真实挂载断言）守护。
+
+### 8.1 根锚点与令牌
+
+- **根锚点**：宿主 div 带 `data-dsh-better-sidebar` 属性（append 到 `document.body`），面板是其 fixed 直接子级——主题用 `[data-dsh-better-sidebar] > ...` 精确命中，不会误伤页面其他元素。
+- **面板表面**：右/底面板背景 = `var(--dsw-alias-bg-layer-1)`（通用卡片表面）。**面板绝不消费 `--dsw-specific-sidebar-fill`**——那是宿主左侧导航列专属令牌，皮肤覆盖它（透明化 / 深色化）会连带打穿面板（issue #106/#60）。要整体换面板表面：在 `[data-dsh-better-sidebar]` 作用域覆写 `--dsw-alias-bg-layer-1` 一个变量即可（deep-whale 的既有做法，无需新增令牌）。
+- **布局变量**（写在 `<html>` 上，面板打开时有效）：`--dsh-sidebar-width` / `--dsh-sidebar-height`（面板几何；拖拽期间逐帧更新）。角手柄就是靠 `--dsh-sidebar-height` 定位的，主题改面板布局时无需重算坐标。
+- **z-index**：面板 40、折叠按钮簇 45（角手柄在面板内层叠，z-index 2 仅面板内有效）——全部低于 DSH 浮层栈（100/1000+），主题浮层天然盖住侧边栏。
+- **拖条/角手柄的几何**：宽度拖条 `left: -4px`、高度拖条 `top: -4px`（8px 命中条居中在面板边，与宿主 frame handle 同款）。浮卡皮肤若给面板加 `overflow:hidden` + inset，用 `[data-bs-resize-strip="width|height"]` / `[data-bs-corner-handle]` 钩子自行重定位即可。
+
+### 8.2 `data-bs-*` 语义钩子（稳定，不随类名变化）
+
+| 钩子 | 元素 |
+|---|---|
+| `data-bs-panel="right"` / `"bottom"` | 右面板 / 底面板 |
+| `data-bs-toggle-cluster` | 右上角折叠按钮簇 |
+| `data-bs-resize-strip="width"` / `"height"` | 宽度 / 高度拖条 |
+| `data-bs-corner-handle` | 共享角手柄（两面板同开时） |
+| `data-bs-tabbar` | 标签条 |
+| `data-bs-pane` / `data-bs-pane-card` | 工作台叶子 / 空面板欢迎卡 |
+| `data-bs-browser-bar` | 浏览器地址栏 |
+
+### 8.3 类名约定
+
+CSS Modules 本地名保留 `[hash]_[local]`，且 **panel 家族（含 chrome）全小写**（`bottom-panel`/`bottom-resize`/`bottom-close`/`corner-handle`…），因此 `[class*='panel']`、`[class*='resize']`、`[class*='handle']` 这类**大小写敏感**的子串选择器可以放心使用；其余内部类名是 camelCase，仅供子串选择器命中时留意大小写，优先用 `data-bs-*`。
+
+### 8.4 注意事项
+
+- 终端背景经 `effectiveTokenValue` 读取 `--dsw-alias-bg-base`：值为 `transparent` 时回退不透明底色（issue #90）。要控制终端表面请在 `[data-dsh-better-sidebar]` 作用域内给半透明值（如 `rgba(…,0.96)`）。
+- 主题覆盖令牌时请限定在 `[data-dsh-better-sidebar]` 作用域（deep-whale 的做法），避免全局改写影响宿主。
+- 改动本契约（新增/改名钩子、调整令牌）必须同步更新本文档、设计文档与上述测试。
+
+---
+
+## 9. 完整最小示例
 
 > 假设插件 `my-plugin` 要加一个"Database 浏览器" tab + `.csv` 文件预览器。
 
@@ -636,7 +672,7 @@ function parseCsv(text: string): string[][] { /* ... */ }
 
 ---
 
-## 9. 参考实现
+## 10. 参考实现
 
 better-sidebar 自己的内置 tab 和 viewer 就是参考实现（"吃狗粮"）：
 

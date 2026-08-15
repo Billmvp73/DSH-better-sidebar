@@ -31,6 +31,29 @@ export function tokenValue(name: string): string {
 }
 
 /**
+ * A token value that actually PAINTS something. Skin plugins routinely set
+ * global tokens to `transparent` (glass skins) — a truthy string, so callers
+ * using `|| fallback` never fire and surfaces go see-through over the skin's
+ * animated backdrop (issue #90). This returns '' for visually inert values
+ * so the caller's fallback chain engages; everything else (including
+ * translucent colors like `rgba(…,0.96)`, which are deliberate surface
+ * choices) passes through.
+ */
+export function effectiveTokenValue(name: string): string {
+  const raw = tokenValue(name)
+  switch (raw) {
+    case '':
+    case 'transparent':
+    case 'initial':
+    case 'inherit':
+    case 'unset':
+      return ''
+    default:
+      return raw
+  }
+}
+
+/**
  * Subscribe to color-scheme flips (the presenter toggles the body
  * attribute). The callback fires after the attribute changed; re-read the
  * scheme inside it.

@@ -36,17 +36,16 @@
 
 ## 🆕 最近更新
 
-<small>v0.12.2</small>
+<small>v0.13.0</small>
 
-> 📝 **说明**：本版新增「位置兼容模式」——为 Windows 右上角原生标题栏预留顶部空间，侧边栏整体下移，距离可在齿轮弹窗自定义（0–120px）。随 0.12.0 起的服务化基座一同发布：能力探测、状态订阅、tab 角标、生命周期回调、外链认领（`urlTarget`）与插件自有设置均已就绪，第三方插件可深度接入；设置页新增「添加插件」推荐目录。详细条目见下表。
+> 📝 **说明**：本版专注**皮肤/主题兼容性**（[#106](https://github.com/omdsh-dev/DSH-better-sidebar/issues/106) [#105](https://github.com/omdsh-dev/DSH-better-sidebar/issues/105) [#60](https://github.com/omdsh-dev/DSH-better-sidebar/issues/60) [#90](https://github.com/omdsh-dev/DSH-better-sidebar/issues/90)）：面板表面改用通用卡片令牌（`--dsw-alias-bg-layer-1`）——皮肤插件把 `--dsw-specific-sidebar-fill` 透明化/深色化不再打穿面板；新增稳定的 `data-bs-*` 语义钩子供主题插件寻址；panel 家族类名统一小写；角手柄改为 CSS 相对面板定位；面板 z-index 降到 DSH 浮层栈之下，Cordis 弹出框不再被底部工作台遮挡。详细条目见下表。
 
 | 功能 | 说明 | 截图 |
 |---|---|---|
-| 📐 位置兼容模式 | 设置页新增「位置兼容模式」开关：为 Windows 右上角原生标题栏预留顶部空间，侧边栏按钮与内容整体下移（默认关闭）；下移距离可在齿轮弹窗中自定义（0–120px） | |
-| 🔌 服务化基座 | 完整类型导出 + `version`/`features` 能力探测、状态订阅（`getSnapshot`/`subscribeState`）、tab 角标、`onOpen`/`onActivate`/`onClose` 生命周期回调、`updateTab`/`activateTab`/`openFile`、定向打开、`meta` 跨刷新持久化、插件自有设置（`pluginToggles`/`render`）、外链点击目标认领（`urlTarget`） | <a href="https://github.com/user-attachments/assets/946f7028-4967-461e-a750-d1b5056b62d0"><img width="800" alt="服务化基座截图" src="https://github.com/user-attachments/assets/946f7028-4967-461e-a750-d1b5056b62d0" /></a> |
-| ➕ 添加插件 | 设置页「推荐插件目录」+ 一键复制安装命令；内置 Office 预览迁至推荐插件 | <a href="https://github.com/user-attachments/assets/d4385b7e-aab4-425d-a5c4-2da5da81a34e"><img width="800" alt="添加插件截图" src="https://github.com/user-attachments/assets/d4385b7e-aab4-425d-a5c4-2da5da81a34e" /></a> |
-| 🖱️ 标签页滚轮 | 标签页栏支持鼠标滚轮横向滚动 | |
-| 🐛 修复 | 远程访问 403（信任栅栏改用 `trustedHosts`）、侧边栏崩溃 [#31](https://github.com/omdsh-dev/DSH-better-sidebar/issues/31)、Windows 下 HTML 预览盘符路径 | |
+| 🎨 皮肤适配契约 | 面板背景 = `--dsw-alias-bg-layer-1`（通用卡片表面，皮肤可在 `[data-dsh-better-sidebar]` 作用域覆写）；终端在 `--dsw-alias-bg-base: transparent` 时回退不透明底色（[#90](https://github.com/omdsh-dev/DSH-better-sidebar/issues/90)）；契约已写入 AGENTS.md §8 | |
+| 🏷️ `data-bs-*` 钩子 | 面板/标签条/窗格/欢迎卡/浏览器栏/角手柄/拖条都有了稳定属性钩子，主题不再依赖哈希类名；panel 家族类名统一小写（`bottom-panel`/`corner-handle`…），`[class*='panel']` 等子串选择器可命中（[#106](https://github.com/omdsh-dev/DSH-better-sidebar/issues/106)） | |
+| 📐 几何定位 CSS 化 | 角手柄改由 CSS 相对面板定位（跟随 `--dsh-sidebar-height`），删除 JS 内联坐标——浮卡主题不再需要 JS 坐标对齐 | |
+| 🐛 修复 | Cordis 弹出框被底部工作台遮挡（面板 z-index 降到浮层栈之下，[#52](https://github.com/omdsh-dev/DSH-better-sidebar/issues/52)）、刷新按钮图标统一 14px（[#57](https://github.com/omdsh-dev/DSH-better-sidebar/issues/57)）、拖拽布局逐帧回归测试（[#92](https://github.com/omdsh-dev/DSH-better-sidebar/issues/92)） | |
 
 ## 🚀 安装
 
@@ -71,10 +70,10 @@ irm https://raw.githubusercontent.com/omdsh-dev/DSH-better-sidebar/main/scripts/
 
 ```sh
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/omdsh-dev/DSH-better-sidebar/main/scripts/install.sh | bash -s 0.12.2 --restart
+curl -fsSL https://raw.githubusercontent.com/omdsh-dev/DSH-better-sidebar/main/scripts/install.sh | bash -s 0.13.0 --restart
 
 # Windows PowerShell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/omdsh-dev/DSH-better-sidebar/main/scripts/install.ps1'))) -Version 0.12.2 -Restart
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/omdsh-dev/DSH-better-sidebar/main/scripts/install.ps1'))) -Version 0.13.0 -Restart
 ```
 
 不确定的话，可先加 `--dry-run`（PowerShell 用 `-DryRun`）预览步骤再执行。
@@ -100,7 +99,7 @@ minimumReleaseAgeExclude:
   - dsh-better-sidebar
 EOF
 
-# ③ 安装并自动挂载（不带 @版本 = npm 的 latest；固定版本写 dsh-better-sidebar@0.12.2）
+# ③ 安装并自动挂载（不带 @版本 = npm 的 latest；固定版本写 dsh-better-sidebar@0.13.0）
 npx -y --package @deepseek-ai/dsh dsh plugin --profile web add dsh-better-sidebar
 ```
 
@@ -131,7 +130,7 @@ npx -y --package @deepseek-ai/dsh dsh plugin --profile web add dsh-better-sideba
 3. 执行 `dsh plugin --profile web add dsh-better-sidebar`：登记依赖 → 识别包内 `dsh.bundle.patch` → 自动注册进 `dsh.profile.bundles` 挂载；
 4. 清理旧版残留的手动挂载行，避免「双挂载」（页面出现两个侧边栏）。
 
-`curl | bash` / `irm | iex` 会执行远程代码——脚本已随仓库开源（`scripts/install.sh` / `scripts/install.ps1`），可先下载审阅。插件以 npm 包 `dsh-better-sidebar@0.12.2` 发布，通过 `dsh.bundle.patch`（随包的 `cordis.patch.yml`）由官方 CLI 自动挂载，**不修改 DSH 源码**。
+`curl | bash` / `irm | iex` 会执行远程代码——脚本已随仓库开源（`scripts/install.sh` / `scripts/install.ps1`），可先下载审阅。插件以 npm 包 `dsh-better-sidebar@0.13.0` 发布，通过 `dsh.bundle.patch`（随包的 `cordis.patch.yml`）由官方 CLI 自动挂载，**不修改 DSH 源码**。
 
 </details>
 
@@ -177,7 +176,7 @@ dsh plugin --profile web add dsh-better-sidebar
 5. 硬刷新浏览器（Cmd/Ctrl+Shift+R）即可看到效果（client 改动无需重启 DSH；host 半改动才需重启）
 ```
 
-更新：`git pull && pnpm install && pnpm build` → 硬刷新浏览器即可（client 改动热加载生效，无需重启 DSH；host 半改动才需重启）。切回 npm 通道时，把依赖改回 `"dsh-better-sidebar": "^0.12.2"` 再 `pnpm install`。
+更新：`git pull && pnpm install && pnpm build` → 硬刷新浏览器即可（client 改动热加载生效，无需重启 DSH；host 半改动才需重启）。切回 npm 通道时，把依赖改回 `"dsh-better-sidebar": "^0.13.0"` 再 `pnpm install`。
 
 </details>
 

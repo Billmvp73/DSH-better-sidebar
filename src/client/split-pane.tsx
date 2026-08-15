@@ -103,6 +103,7 @@ function PaneEmptyCards(props: {
           key={option.id}
           type="button"
           className={css.paneCard}
+          data-bs-pane-card=""
           disabled={option.disabled === true}
           title={option.label}
           onClick={() => { onNewTab(option.id) }}
@@ -144,6 +145,7 @@ function LeafView(props: {
   return (
     <div
       className={clsx(css.pane, dropZone !== null && css.paneDrop)}
+      data-bs-pane=""
       onPointerDown={() => { actions.focusPane(leaf.id) }}
       onDragOver={(event) => {
         event.preventDefault()

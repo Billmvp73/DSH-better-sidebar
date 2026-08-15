@@ -36,17 +36,16 @@
 
 ## 🆕 Recent Updates
 
-<small>v0.12.2</small>
+<small>v0.13.0</small>
 
-> 📝 **Note**: this release adds "Position compat mode" — reserves top space for the native Windows title bar (top-right), shifting the sidebar buttons and content below it (0–120px, customizable in the gear popup). It ships together with the service API base introduced since v0.12.0: capability detection, state subscription, tab badges, lifecycle callbacks, external-link claiming (`urlTarget`) and plugin-owned settings are all in place for deep third-party integration; settings gained the "Add Plugins" recommended catalog. See the table below for details.
+> 📝 **Note**: this release focuses on **skin/theme compatibility** ([#106](https://github.com/omdsh-dev/DSH-better-sidebar/issues/106) [#105](https://github.com/omdsh-dev/DSH-better-sidebar/issues/105) [#60](https://github.com/omdsh-dev/DSH-better-sidebar/issues/60) [#90](https://github.com/omdsh-dev/DSH-better-sidebar/issues/90)): the panel surface now consumes the generic card token (`--dsw-alias-bg-layer-1`), so skin plugins transparentifying/darkening `--dsw-specific-sidebar-fill` no longer punches through the panels; stable `data-bs-*` semantic hooks give theme plugins class-name-independent anchors; the panel-family class names are all lowercase; the corner handle is positioned by CSS relative to the panel; panel z-index drops below DSH's overlay stack, so Cordis popups are no longer hidden behind the bottom workbench. See the table below for details.
 
 | Feature | Description | Screenshot |
 |---|---|---|
-| 📐 Position compat mode | New "Position compatibility mode" setting: reserves top space for the native Windows title bar (top-right) so the sidebar buttons and content sit below it (off by default); the shift distance is customizable in the gear popup (0–120px) | |
-| 🔌 Service API base | Complete type exports + `version`/`features` capability detection, state subscription (`getSnapshot`/`subscribeState`), tab `badge`, `onOpen`/`onActivate`/`onClose` lifecycle callbacks, `updateTab`/`activateTab`/`openFile`, targeted open, `meta` persisted across reloads, plugin-owned settings (`pluginToggles`/`render`), external-link claim (`urlTarget`) | <a href="https://github.com/user-attachments/assets/946f7028-4967-461e-a750-d1b5056b62d0"><img width="480" alt="Service API base screenshot" src="https://github.com/user-attachments/assets/946f7028-4967-461e-a750-d1b5056b62d0" /></a> |
-| ➕ Add Plugins | Recommended plugin catalog in settings + one-click copy install command; built-in Office preview moved to the recommended plugin | <a href="https://github.com/user-attachments/assets/d4385b7e-aab4-425d-a5c4-2da5da81a34e"><img width="480" alt="Add Plugins screenshot" src="https://github.com/user-attachments/assets/d4385b7e-aab4-425d-a5c4-2da5da81a34e" /></a> |
-| 🖱️ Tab-bar scroll | Mouse-wheel horizontal scrolling on the tab bar | |
-| 🐛 Fixes | Remote access 403 (trust fence now uses `trustedHosts`), sidebar crash [#31](https://github.com/omdsh-dev/DSH-better-sidebar/issues/31), Windows HTML-preview drive-path | |
+| 🎨 Skinning contract | Panel background = `--dsw-alias-bg-layer-1` (the generic card surface; skins can override it scoped to `[data-dsh-better-sidebar]`); the terminal falls back to an opaque background when `--dsw-alias-bg-base` is `transparent` ([#90](https://github.com/omdsh-dev/DSH-better-sidebar/issues/90)); the contract is documented in AGENTS.md §8 | |
+| 🏷️ `data-bs-*` hooks | Stable attribute hooks on panels/tab bar/panes/welcome cards/browser bar/corner handle/resize strips — themes no longer rely on hashed class names; panel-family classes are all lowercase (`bottom-panel`/`corner-handle`…), so case-sensitive substring selectors like `[class*='panel']` match ([#106](https://github.com/omdsh-dev/DSH-better-sidebar/issues/106)) | |
+| 📐 CSS-driven geometry | The corner handle is positioned by CSS relative to the panel (riding `--dsh-sidebar-height`), dropping the JS-written viewport coordinates — floating-card themes no longer fight JS coordinates | |
+| 🐛 Fixes | Cordis popups hidden behind the bottom workbench (panel z-index lowered below the overlay stack, [#52](https://github.com/omdsh-dev/DSH-better-sidebar/issues/52)), refresh icons unified to 14px ([#57](https://github.com/omdsh-dev/DSH-better-sidebar/issues/57)), per-frame drag-layout regression test ([#92](https://github.com/omdsh-dev/DSH-better-sidebar/issues/92)) | |
 
 ## 🚀 Installation
 
@@ -71,10 +70,10 @@ Then **hard-refresh the browser** (Cmd/Ctrl+Shift+R) to see the sidebar (DSH hot
 
 ```sh
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/omdsh-dev/DSH-better-sidebar/main/scripts/install.sh | bash -s 0.12.2 --restart
+curl -fsSL https://raw.githubusercontent.com/omdsh-dev/DSH-better-sidebar/main/scripts/install.sh | bash -s 0.13.0 --restart
 
 # Windows PowerShell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/omdsh-dev/DSH-better-sidebar/main/scripts/install.ps1'))) -Version 0.12.2 -Restart
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/omdsh-dev/DSH-better-sidebar/main/scripts/install.ps1'))) -Version 0.13.0 -Restart
 ```
 
 Not sure? Add `--dry-run` (`-DryRun` in PowerShell) to preview before running.
@@ -100,7 +99,7 @@ minimumReleaseAgeExclude:
   - dsh-better-sidebar
 EOF
 
-# ③ Install and auto-mount (no @version = npm's latest; pin with dsh-better-sidebar@0.12.2)
+# ③ Install and auto-mount (no @version = npm's latest; pin with dsh-better-sidebar@0.13.0)
 npx -y --package @deepseek-ai/dsh dsh plugin --profile web add dsh-better-sidebar
 ```
 
@@ -131,7 +130,7 @@ The one-click script does four things, all idempotent (safe to re-run):
 3. Runs `dsh plugin --profile web add dsh-better-sidebar`: registers the dependency → detects `dsh.bundle.patch` → auto-appends the plugin to `dsh.profile.bundles`;
 4. Removes any leftover hand-written mount line to avoid double-mounting (two sidebars on the page).
 
-`curl | bash` / `irm | iex` executes remote code — the scripts are open source in the repo (`scripts/install.sh` / `scripts/install.ps1`); download and review them first if you prefer. The plugin ships as npm package `dsh-better-sidebar@0.12.2` and mounts via `dsh.bundle.patch` (the shipped `cordis.patch.yml`), so the DSH source is never modified.
+`curl | bash` / `irm | iex` executes remote code — the scripts are open source in the repo (`scripts/install.sh` / `scripts/install.ps1`); download and review them first if you prefer. The plugin ships as npm package `dsh-better-sidebar@0.13.0` and mounts via `dsh.bundle.patch` (the shipped `cordis.patch.yml`), so the DSH source is never modified.
 
 </details>
 
@@ -142,7 +141,7 @@ The one-click script does four things, all idempotent (safe to re-run):
 dsh plugin --profile web add dsh-better-sidebar
 ```
 
-or re-run the one-click script; or bump the version in `~/.dsh/profiles/web/package.json` (e.g. `"^0.12.2"`) and run `pnpm install`. Then hard-refresh the browser (Cmd/Ctrl+Shift+R) — client changes do not need a DSH restart.
+or re-run the one-click script; or bump the version in `~/.dsh/profiles/web/package.json` (e.g. `"^0.13.0"`) and run `pnpm install`. Then hard-refresh the browser (Cmd/Ctrl+Shift+R) — client changes do not need a DSH restart.
 
 </details>
 
@@ -177,7 +176,7 @@ To debug local changes or track the dev branch, point the dependency at a local 
 5. Restart DSH and hard-refresh
 ```
 
-Update: `git pull && pnpm install && pnpm build` → just hard-refresh the browser (client changes hot-reload; only host-half changes need a DSH restart). To switch back to the npm channel, restore `"dsh-better-sidebar": "^0.12.2"` and re-run `pnpm install`.
+Update: `git pull && pnpm install && pnpm build` → just hard-refresh the browser (client changes hot-reload; only host-half changes need a DSH restart). To switch back to the npm channel, restore `"dsh-better-sidebar": "^0.13.0"` and re-run `pnpm install`.
 
 </details>
 

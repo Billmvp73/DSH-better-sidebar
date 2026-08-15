@@ -127,7 +127,7 @@ export function BrowserView(props: TabComponentProps) {
 
   return (
     <div className={css.browser}>
-      <div className={css.browserBar}>
+      <div className={css.browserBar} data-bs-browser-bar="">
         <button
           type="button"
           className={css.iconButton}

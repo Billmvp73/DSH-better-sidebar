@@ -134,6 +134,28 @@ test('plugin mounts into the DSH shell and survives a built-in tab sweep', async
   const tabBar = sidebar.locator('[title]')
   await expect(tabBar.first()).toBeAttached({ timeout: 90_000 })
 
+  // Skinning contract (issue #106): the stable data-bs-* anchors must exist
+  // on the mounted shell — theme plugins address surfaces through them, so a
+  // class rename must never silently break the contract. The right panel
+  // only mounts once a session becomes current (the app's session join lags
+  // the rail render), so WAIT for the panel itself instead of trusting the
+  // generic `[title]` marker above.
+  await expect(
+    sidebar.locator('[data-bs-panel="right"]'),
+    'the right panel must mount once a session is current',
+  ).toBeAttached({ timeout: 90_000 })
+  for (const selector of [
+    '[data-bs-toggle-cluster]',
+    '[data-bs-tabbar]',
+    '[data-bs-pane]',
+    '[data-bs-resize-strip="width"]',
+  ]) {
+    await expect(
+      sidebar.locator(selector).first(),
+      `skinning hook ${selector} must be present on the mounted sidebar`,
+    ).toBeAttached()
+  }
+
   // Crash-marker assertions shared by every step.
   const assertNoCrash = async (): Promise<void> => {
     await expect
