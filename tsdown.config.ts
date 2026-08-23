@@ -41,7 +41,7 @@
  * Types ship from lib/types (tsc -p tsconfig.build.json), not from tsdown.
  */
 import { readFile } from 'node:fs/promises'
-import { basename, dirname, relative, resolve as resolvePath, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve as resolvePath, sep } from 'node:path'
 import { builtinModules, createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import type { UserConfig } from 'tsdown'
@@ -63,11 +63,21 @@ const CLIENT_EXTERNALS = [
   'react-dom/client',
   'cordis',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-web-react',
   '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-schema-form',
   '@deepseek-ai/dsh-client-runtime/client',
 ]
+
+/**
+ * react-icons' exports map lists `require` BEFORE `import`, so the shared
+ * conditionNames resolve the unshakeable CJS entry and the whole icon set
+ * lands in the core bundle (~6.4 MB extra). Pin the two sets the client
+ * uses to their ESM entries, which tree-shake down to the imported icons.
+ */
+const reactIconsRoot = dirname(dirname(require.resolve('react-icons/lib')))
+const REACT_ICONS_ESM_ALIAS = {
+  'react-icons/si': join(reactIconsRoot, 'si/index.mjs'),
+  'react-icons/vsc': join(reactIconsRoot, 'vsc/index.mjs'),
+}
 
 /**
  * Wire/type layers a client bundle may inline (mirror of the official
@@ -142,6 +152,7 @@ function clientBundle(pluginId: string, entryFile: string): UserConfig {
     inputOptions: {
       resolve: {
         conditionNames: ['browser', 'import', 'require', 'default'],
+        alias: REACT_ICONS_ESM_ALIAS,
       },
     },
     // External wins for module-table entries; every other dependency inlines.
@@ -204,7 +215,11 @@ function chunkBundle(name: string): UserConfig {
       },
     },
     noExternal: (id: string) => (CLIENT_EXTERNALS.includes(id) ? undefined : true),
-    plugins: [purityGatePlugin(), makeCssPlugin('dsh-better-sidebar')],
+    plugins: [
+      purityGatePlugin(),
+      makeCssPlugin('dsh-better-sidebar'),
+      ...(name === 'mermaid' ? [mermaidChunkAliases()] : []),
+    ],
     outputOptions: {
       entryFileNames: `client-${name}.js`,
       sourcemapPathTransform: browserSourcePath,
@@ -218,6 +233,29 @@ function chunkBundle(name: string): UserConfig {
 
 /** A rolldown plugin as tsdown's config accepts it (contextual `this` for load/resolveId). */
 type BuildPlugin = NonNullable<UserConfig['plugins']>
+
+/**
+ * Mermaid-chunk-only alias: pin uuid's BROWSER entry. The mermaid core
+ * (mindmap definition) imports the bare `uuid` specifier, which rolldown
+ * resolves to uuid's node entry — its dist-node modules import
+ * `node:crypto` and trip the client purity gate. The browser entry
+ * (uuid/dist/index.js, Web Crypto based) carries no Node builtins, so alias
+ * the specifier there instead of special-casing the gate. Resolved relative
+ * to mermaid's own dependency tree (pnpm/npm layout agnostic).
+ */
+function mermaidChunkAliases(): BuildPlugin {
+  const uuidBrowserEntry = resolvePath(
+    dirname(require.resolve('uuid/package.json', { paths: [dirname(require.resolve('mermaid/package.json'))] })),
+    'dist/index.js',
+  )
+  return {
+    name: 'dsh-mermaid-uuid-browser-alias',
+    resolveId(source: string) {
+      if (source === 'uuid') return uuidBrowserEntry
+      return null
+    },
+  }
+}
 
 /** The shared client-bundle purity gate (see the clientBundle doc). */
 function purityGatePlugin(): BuildPlugin {
@@ -248,7 +286,7 @@ function makeCssPlugin(pluginId: string): BuildPlugin {
     resolveId(source: string, importer: string | undefined) {
       if (!source.endsWith('.css')) return null
       // Relative/absolute paths resolve against the importer; bare
-      // specifiers (e.g. 'xterm/css/xterm.css') resolve from the package.
+      // specifiers (e.g. '@xterm/xterm/css/xterm.css') resolve from the package.
       let abs: string
       if (source.startsWith('.') || source.startsWith('/') || /^[A-Za-z]:[\\/]/.test(source)) {
         abs = importer === undefined ? source : resolvePath(dirname(importer), source)
@@ -287,7 +325,7 @@ function makeCssPlugin(pluginId: string): BuildPlugin {
 }
 
 /** The lazy chunk names (keep in sync with src/bundle-route.ts CHUNK_NAMES). */
-const CHUNKS = ['terminal', 'editor']
+const CHUNKS = ['terminal', 'editor', 'mermaid']
 
 export default [
   {

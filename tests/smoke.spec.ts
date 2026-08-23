@@ -5,15 +5,30 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve as resolvePath } from 'node:path'
 import { SettingsConflictError, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { apply, mediaTypeForPath } from '../src/index.ts'
 import * as git from '../src/git.ts'
 import { listDirectory } from '../src/fs-tree.ts'
-import { defaultShell, PtyManager } from '../src/pty-manager.ts'
+import { encodeHtmlUrl } from '../src/html-route.ts'
+import { defaultShell, PtyManager, type SidebarPty } from '../src/pty-manager.ts'
 import type { SidebarWebRoute, SidebarWebUpgradeRoute } from '../src/context-types.ts'
+
+/** Symlink creation may require elevated privileges on Windows. */
+const canCreateSymlink = (() => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-sidebar-security-probe-'))
+  try {
+    mkdirSync(join(dir, 'target'))
+    symlinkSync(join(dir, 'target'), join(dir, 'link'))
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})()
 
 interface FakeContext {
   webRuntime: { trustedHosts: readonly string[] }
@@ -29,6 +44,32 @@ interface FakeContext {
   inject: (deps: readonly string[], callback: (sctx: never) => void) => () => void
   /** Optional services (jobs/agents) are read lazily; absent → undefined. */
   get: (key: string) => undefined
+}
+
+/**
+ * The login-shell test spawns a real pty whose bash may still be writing to
+ * the temp HOME (history files, etc.) when `disposeAll()` returns — `close()`
+ * only requests the kill and the process exit lands asynchronously in
+ * `onExit`. Deleting the directory immediately then races the shell and
+ * fails with ENOTEMPTY on CI. Wait for the spawned handle to report `exited`
+ * (bounded), then remove with a short retry loop as a belt-and-braces
+ * fallback for any straggler fd.
+ */
+async function rmTempDirAfterPtyExit(handle: { exited: boolean }, dir: string): Promise<void> {
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline && !handle.exited) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const busy = (error as NodeJS.ErrnoException).code === 'ENOTEMPTY' || (error as NodeJS.ErrnoException).code === 'EBUSY'
+      if (!busy || attempt >= 4) throw error
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)))
+    }
+  }
 }
 
 describe('host plugin smoke', () => {
@@ -62,7 +103,13 @@ describe('host plugin smoke', () => {
       get: () => undefined,
     }
     apply(ctx as never)
-    expect(routes.map(route => route.path)).toEqual(['/sidebar/api', '/sidebar/bundle', '/sidebar/file', '/sidebar/html'])
+    expect(routes.map(route => route.path)).toEqual([
+      '/sidebar/api',
+      '/sidebar/upload',
+      '/sidebar/bundle',
+      '/sidebar/file',
+      '/sidebar/html',
+    ])
     expect(upgrades.map(route => route.path)).toEqual(['/sidebar/ws/terminal', '/sidebar/ws/agent-terminals'])
     // Teardown runs without throwing (pty manager has nothing open).
     for (const cleanup of effects) cleanup()
@@ -166,6 +213,60 @@ describe('host plugin smoke', () => {
     }
   })
 
+  it('pty manager: a parked pty survives past the reconnect grace (session switch)', async () => {
+    const manager = new PtyManager(defaultShell(), 3)
+    try {
+      const handle = manager.open('s2', 't1', process.cwd(), 80, 24)
+      manager.park(handle.key)
+      expect(manager.isParked(handle.key)).toBe(true)
+      // A parked pty does NOT enter the grace countdown — it stays alive
+      // well past any realistic reconnectGraceMs.
+      await new Promise(resolve => setTimeout(resolve, 300))
+      expect(manager.get(handle.key)).toBeDefined()
+      expect(manager.isParked(handle.key)).toBe(true)
+    } finally {
+      manager.disposeAll()
+    }
+  })
+
+  it('pty manager: a reconnecting view clears the parked state (switch back)', () => {
+    const manager = new PtyManager(defaultShell(), 3)
+    try {
+      const handle = manager.open('s2', 't1', process.cwd(), 80, 24)
+      manager.park(handle.key)
+      expect(manager.isParked(handle.key)).toBe(true)
+      // open() calls cancelClose(), which clears the parked state — the
+      // user switched back to the session and the view reattached.
+      manager.open('s2', 't1', process.cwd(), 80, 24)
+      expect(manager.isParked(handle.key)).toBe(false)
+      expect(manager.get(handle.key)).toBeDefined()
+    } finally {
+      manager.disposeAll()
+    }
+  })
+
+  it('pty manager: an explicit close frame on a parked pty still kills it', async () => {
+    const manager = new PtyManager(defaultShell(), 3)
+    try {
+      const handle = manager.open('s2', 't1', process.cwd(), 80, 24)
+      manager.park(handle.key)
+      // The user switched back and closed the tab — scheduleClose (the
+      // close-frame handler) clears the parked state and kills the pty.
+      manager.scheduleClose(handle.key, 0)
+      expect(manager.isParked(handle.key)).toBe(false)
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(manager.get(handle.key)).toBeUndefined()
+    } finally {
+      manager.disposeAll()
+    }
+  })
+
+  it('pty manager: park on an unknown key is a no-op', () => {
+    const manager = new PtyManager(defaultShell(), 3)
+    expect(() => manager.park('s2:nonexistent')).not.toThrow()
+    expect(manager.isParked('s2:nonexistent')).toBe(false)
+  })
+
   it('pty manager: reopening with a different cwd respawns in the new directory', async () => {
     const manager = new PtyManager(defaultShell(), 3)
     // A real second directory: os.tmpdir() exists on every platform ('/tmp'
@@ -191,6 +292,7 @@ describe('host plugin smoke', () => {
   it.skipIf(process.platform === 'win32')('spawns the shell as a login shell (loads ~/.profile)', async () => {
     const home = mkdtempSync(join(tmpdir(), 'dsh-sidebar-login-'))
     const previousHome = process.env.HOME
+    let handle: SidebarPty | undefined
     try {
       // A login bash reads ~/.profile (a non-login interactive bash reads
       // ~/.bashrc instead), so this marker proves the spawn used a login
@@ -199,7 +301,7 @@ describe('host plugin smoke', () => {
       process.env.HOME = home
       const manager = new PtyManager('/bin/bash', 3)
       try {
-        const handle = manager.open('s5', 't1', process.cwd(), 80, 24)
+        handle = manager.open('s5', 't1', process.cwd(), 80, 24)
         handle.pty.write('echo $DSH_LOGIN_MARKER\r')
         const deadline = Date.now() + 5000
         while (!handle.transcript.includes('loaded-from-profile') && Date.now() < deadline) {
@@ -212,7 +314,7 @@ describe('host plugin smoke', () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME
       else process.env.HOME = previousHome
-      rmSync(home, { recursive: true, force: true })
+      await rmTempDirAfterPtyExit(handle ?? { exited: true }, home)
     }
   })
 
@@ -333,7 +435,7 @@ describe('session cwd resolution over the API route', () => {
     sessions?: { get: (id: string) => { header: { cwd?: string } } | undefined }
   }
 
-  const mount = (overrides: CtxOverrides = {}): SidebarWebRoute => {
+  const mountAll = (overrides: CtxOverrides = {}): SidebarWebRoute[] => {
     const routes: SidebarWebRoute[] = []
     const ctx = {
       webRuntime: { trustedHosts: [] },
@@ -351,14 +453,16 @@ describe('session cwd resolution over the API route', () => {
       get: () => undefined,
     }
     apply(ctx as never)
-    return routes.find(route => route.path === '/sidebar/api')!
+    return routes
   }
+
+  const mount = (overrides: CtxOverrides = {}): SidebarWebRoute => mountAll(overrides).find(route => route.path === '/sidebar/api')!
 
   const invoke = async (
     route: SidebarWebRoute,
     method: string,
     payload: unknown,
-  ): Promise<{ ok: boolean; value?: { cwd: string }; error?: { message: string } }> => {
+  ): Promise<{ ok: boolean; status: number; value?: { cwd: string }; error?: { code?: string; message: string } }> => {
     const body = Buffer.from(JSON.stringify(payload))
     const req = {
       method: 'POST',
@@ -372,7 +476,18 @@ describe('session cwd resolution over the API route', () => {
       end: (chunk: unknown) => { out.body += String(chunk ?? '') },
     } as never
     await route.handler(req, res)
-    return JSON.parse(out.body) as { ok: boolean; value?: { cwd: string }; error?: { message: string } }
+    return { ...JSON.parse(out.body) as { ok: boolean; value?: { cwd: string }; error?: { code?: string; message: string } }, status: out.status }
+  }
+
+  const invokeGet = async (route: SidebarWebRoute, url: string): Promise<{ status: number; body: string }> => {
+    const out: { status: number; body: string } = { status: 200, body: '' }
+    const req = { method: 'GET', url, headers: { host: '127.0.0.1:3080' } } as never
+    const res = {
+      writeHead: (status: number) => { out.status = status },
+      end: (chunk: unknown) => { out.body += String(chunk ?? '') },
+    } as never
+    await route.handler(req, res)
+    return out
   }
 
   it('uses the client summary cwd while the session is detached', async () => {
@@ -445,15 +560,171 @@ describe('session cwd resolution over the API route', () => {
     expect(value.value?.kind).toBe('text')
     expect(value.value?.content).toContain('runGit')
   })
+
+  it('rejects repo-root-relative fs.read paths outside a nested session workspace', async () => {
+    const route = mount({
+      sessions: {
+        get: () => ({ header: { cwd: join(process.cwd(), 'src') } }),
+      },
+    })
+    const result = await invoke(route, 'fs.read', { sessionId: 's-sub', path: 'package.json' })
+    expect(result).toMatchObject({ ok: false, status: 403, error: { code: 'forbidden' } })
+  })
+
+  it('rejects fs.tree paths outside the session workspace', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-fs-security-'))
+    const workspace = join(root, 'workspace')
+    const outside = join(root, 'outside')
+    mkdirSync(workspace)
+    mkdirSync(outside)
+    const outsideFile = join(outside, 'secret.txt')
+    writeFileSync(outsideFile, 'secret')
+    try {
+      const route = mount({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
+      const tree = await invoke(route, 'fs.tree', { sessionId: 'security', path: outside })
+      expect(tree).toMatchObject({ ok: false, status: 403, error: { code: 'forbidden' } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects fs.read paths outside the session workspace', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-fs-security-'))
+    const workspace = join(root, 'workspace')
+    const outside = join(root, 'outside')
+    mkdirSync(workspace)
+    mkdirSync(outside)
+    const outsideFile = join(outside, 'secret.txt')
+    writeFileSync(outsideFile, 'secret')
+    try {
+      const route = mount({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
+      const read = await invoke(route, 'fs.read', { sessionId: 'security', path: outsideFile })
+      expect(read).toMatchObject({ ok: false, status: 403, error: { code: 'forbidden' } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects fs.write paths outside the session workspace', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-fs-security-'))
+    const workspace = join(root, 'workspace')
+    const outside = join(root, 'outside')
+    mkdirSync(workspace)
+    mkdirSync(outside)
+    try {
+      const route = mount({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
+      const write = await invoke(route, 'fs.write', { sessionId: 'security', path: join(outside, 'written.txt'), content: 'hack' })
+      expect(write).toMatchObject({ ok: false, status: 403, error: { code: 'forbidden' } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects media and HTML reads through a workspace symlink', async () => {
+    if (!canCreateSymlink) return
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-route-symlink-security-'))
+    const workspace = join(root, 'workspace')
+    const outside = join(root, 'outside')
+    mkdirSync(workspace)
+    mkdirSync(outside)
+    const mediaPath = join(outside, 'secret.png')
+    const htmlPath = join(outside, 'secret.html')
+    writeFileSync(mediaPath, 'not an image')
+    writeFileSync(htmlPath, '<p>secret</p>')
+    try {
+      symlinkSync(outside, join(workspace, 'link'))
+      const routes = mountAll({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
+      const media = routes.find(route => route.path === '/sidebar/file')!
+      const html = routes.find(route => route.path === '/sidebar/html')!
+      const mediaResult = await invokeGet(media, `/sidebar/file?sessionId=security&path=${encodeURIComponent(join(workspace, 'link', 'secret.png'))}`)
+      // Use the production encoder so the URL is well-formed on every
+      // platform (a Windows drive path needs the leading slash separator
+      // that a naive join-without-separator drops).
+      const htmlResult = await invokeGet(html, encodeHtmlUrl('security', join(workspace, 'link', 'secret.html')))
+      expect(mediaResult).toMatchObject({ status: 403 })
+      expect(JSON.parse(mediaResult.body)).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+      expect(htmlResult).toMatchObject({ status: 403 })
+      expect(JSON.parse(htmlResult.body)).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps fs.tree missing-path failures as fs errors', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-fs-security-'))
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    try {
+      const route = mount({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
+      const tree = await invoke(route, 'fs.tree', { sessionId: 'security', path: join(workspace, 'missing') })
+      expect(tree).toMatchObject({ ok: false, status: 400, error: { code: 'fs-error' } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(!canCreateSymlink)('rejects workspace symlinks that resolve outside the workspace', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-fs-symlink-security-'))
+    const workspace = join(root, 'workspace')
+    const outside = join(root, 'outside')
+    mkdirSync(workspace)
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'secret.txt'), 'secret')
+    try {
+      symlinkSync(outside, join(workspace, 'link'))
+      const route = mount({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
+      const tree = await invoke(route, 'fs.tree', { sessionId: 'security', path: join(workspace, 'link') })
+      expect(tree).toMatchObject({ ok: false, status: 403, error: { code: 'forbidden' } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(!canCreateSymlink)('rejects fs.read through a workspace symlink', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-fs-symlink-security-'))
+    const workspace = join(root, 'workspace')
+    const outside = join(root, 'outside')
+    mkdirSync(workspace)
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'secret.txt'), 'secret')
+    try {
+      symlinkSync(outside, join(workspace, 'link'))
+      const route = mount({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
+      const read = await invoke(route, 'fs.read', { sessionId: 'security', path: join(workspace, 'link', 'secret.txt') })
+      expect(read).toMatchObject({ ok: false, status: 403, error: { code: 'forbidden' } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(!canCreateSymlink)('rejects fs.write through a workspace symlink', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-fs-symlink-security-'))
+    const workspace = join(root, 'workspace')
+    const outside = join(root, 'outside')
+    mkdirSync(workspace)
+    mkdirSync(outside)
+    try {
+      symlinkSync(outside, join(workspace, 'link'))
+      const route = mount({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
+      const write = await invoke(route, 'fs.write', { sessionId: 'security', path: join(workspace, 'link', 'new.txt'), content: 'hack' })
+      expect(write).toMatchObject({ ok: false, status: 403, error: { code: 'forbidden' } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('side card settings routes', () => {
   /** A minimal settings seam: register/describe/update with the revision guard. */
-  const createFakeSettings = () => {    const namespaces = new Map<string, {
+  const createFakeSettings = (pre?: Record<string, Record<string, unknown>>) => {
+    const namespaces = new Map<string, {
       schema: unknown
       value: Record<string, unknown> | undefined
       revision: number
     }>()
+    for (const [ns, value] of Object.entries(pre ?? {})) {
+      namespaces.set(ns, { schema: (input: unknown) => input, value, revision: 0 })
+    }
     const resolve = (entry: { schema: unknown; value: Record<string, unknown> | undefined }): unknown => {
       const schema = entry.schema as (input: unknown) => unknown
       return entry.value === undefined ? schema(undefined) : schema(entry.value)
@@ -530,7 +801,32 @@ describe('side card settings routes', () => {
     const route = mountWithSettings(undefined)
     const result = await invoke(route, 'settings.get', {})
     expect(result.ok).toBe(true)
-    expect(result.value).toEqual({ value: undefined, revision: undefined })
+    expect(result.value).toEqual({ value: undefined, revision: undefined, externalDisable: false })
+  })
+
+  it('reports externalDisable false when the aionui namespace is absent', async () => {
+    const route = mountWithSettings(createFakeSettings())
+    const result = await invoke(route, 'settings.get', {})
+    expect(result.ok).toBe(true)
+    expect((result.value as { externalDisable?: boolean }).externalDisable).toBe(false)
+  })
+
+  it('reports externalDisable true while the aionui provider is selected', async () => {
+    const route = mountWithSettings(createFakeSettings({ 'aionui-panel': { rightPanel: 'aionui-panel' } }))
+    const result = await invoke(route, 'settings.get', {})
+    expect(result.ok).toBe(true)
+    expect((result.value as { externalDisable?: boolean }).externalDisable).toBe(true)
+  })
+
+  it('serves the effective terminal shell and its display name', async () => {
+    const route = mountWithSettings(undefined)
+    const result = await invoke(route, 'shell.get', {})
+    expect(result.ok).toBe(true)
+    expect(result.value).toMatchObject({
+      shell: expect.any(String),
+      name: expect.any(String),
+    })
+    expect(String((result.value as { name: unknown }).name).length).toBeGreaterThan(0)
   })
 
   it('reads the resolved prefs and writes a patch through the seam', async () => {
@@ -539,8 +835,8 @@ describe('side card settings routes', () => {
     expect(read.ok).toBe(true)
     expect(read.value).toEqual({
       value: {
-        openByDefault: true,
-        defaultWidthPercent: 30,
+        openByDefault: false,
+        defaultWidthPercent: 35,
         autoOpenSubagent: true,
         autoOpenJobs: true,
         agentTerminalTools: false,
@@ -548,6 +844,9 @@ describe('side card settings routes', () => {
         terminalFontFamily: '',
         terminalFontSize: 13,
         interceptOpenPath: true,
+        editorExplorer: false,
+        terminalShell: '',
+        terminalShellArgs: '',
         titleBarCompat: false,
         titleBarStripPx: 40,
         htmlViewerNoSandbox: false,
@@ -569,13 +868,14 @@ describe('side card settings routes', () => {
         pluginSettings: {},
       },
       revision: 0,
+      externalDisable: false,
     })
 
-    const written = await invoke(route, 'settings.update', { patch: { openByDefault: false } })
+    const written = await invoke(route, 'settings.update', { patch: { openByDefault: true } })
     expect(written.ok).toBe(true)
     const view = written.value as { value: { openByDefault: boolean; defaultWidthPercent: number }; revision: number }
-    expect(view.value.openByDefault).toBe(false)
-    expect(view.value.defaultWidthPercent).toBe(30)
+    expect(view.value.openByDefault).toBe(true)
+    expect(view.value.defaultWidthPercent).toBe(35)
     expect(view.revision).toBe(1)
   })
 

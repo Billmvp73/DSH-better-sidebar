@@ -2,7 +2,7 @@
  * Tests for the BetterSidebar service registry: register/dispose lifecycle,
  * matchFileViewer priority/exts/detect algorithm, and openTab dedupe.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 
 // Mock browser globals (SidebarStore.reduce → schedulePersist uses window.setTimeout)
 const g = globalThis as Record<string, unknown>
@@ -21,7 +21,7 @@ if (g.localStorage === undefined) {
 }
 
 import { createBetterSidebarService, matchUrlTarget, SIDEBAR_FEATURES, SIDEBAR_SERVICE_VERSION } from '../src/client/service.ts'
-import { createSidebarStore, allLeaves, makeDefaultState, openDiffTab, sanitizeState } from '../src/client/state.ts'
+import { createSidebarStore, allLeaves, floatTab, makeDefaultState, openDiffTab, openTabInActivePane, sanitizeState } from '../src/client/state.ts'
 
 describe('BetterSidebar service', () => {
   it('registerTab adds to the registry and dispose removes it', () => {
@@ -108,8 +108,9 @@ describe('enable switches (declarative settings)', () => {
     store.setPrefs({ ...store.getPrefs(), tabsEnabled: { explorer: false } })
     store.setSession('s1')
     service.openTab({ type: 'explorer', title: 'Explorer' })
+    // The seeded files-window home tab stays; no EXPLORER tab landed.
     const tabs = allLeaves(store.getSnapshot().state!.splits).flatMap(l => l.tabs)
-    expect(tabs).toHaveLength(0)
+    expect(tabs.filter(t => t.type === 'explorer')).toHaveLength(0)
   })
 
   it('matchFileViewer skips a disabled viewer (files fall through)', () => {
@@ -352,7 +353,8 @@ describe('service.openTab dedupe', () => {
     store.setSession('s1')
     service.openTab({ type: 'editor', title: 'main.ts', path: '/p/main.ts' })
     const state = store.getSnapshot().state!
-    const tab = allLeaves(state.splits).flatMap(l => l.tabs).find(t => t.type === 'editor')
+    // Find by path: the seeded files-window home tab is an editor tab too.
+    const tab = allLeaves(state.splits).flatMap(l => l.tabs).find(t => t.type === 'editor' && t.path === '/p/main.ts')
     expect(tab?.title).toBe('main.ts')
   })
 
@@ -643,7 +645,7 @@ describe('service.openTab auto-expand for content opens', () => {
     service.openTab({ type: 'editor', title: 'main.ts', path: '/p/main.ts' })
     const state = store.getSnapshot().state!
     expect(state.panelOpen).toBe(true)
-    expect(allLeaves(state.splits).flatMap(l => l.tabs).filter(t => t.type === 'editor')).toHaveLength(1)
+    expect(allLeaves(state.splits).flatMap(l => l.tabs).filter(t => t.type === 'editor' && t.path === '/p/main.ts')).toHaveLength(1)
   })
 })
 
@@ -671,7 +673,7 @@ describe('state subscription (v0.12.0)', () => {
     const snapshot = service.getSnapshot()
     expect(snapshot.sessionId).toBe('s1')
     expect(snapshot.state).toBeDefined()
-    expect(snapshot.prefs.openByDefault).toBe(true)
+    expect(snapshot.prefs.openByDefault).toBe(false)
   })
 
   it('subscribeState fires on state changes but NOT on registry changes', () => {
@@ -739,7 +741,7 @@ describe('targeted openTab (v0.12.0)', () => {
     service.registerTab({ id: 'notes', title: 'Notes', component: () => null })
     store.setSession('s1')
     service.openTab({ type: 'notes', title: 'Notes', id: 'notes:1' }, { sessionId: 's2' })
-    // The UI snapshot still shows s1, untouched (its default explorer tab
+    // The UI snapshot still shows s1, untouched (its default files-window tab
     // is the only one — no notes tab landed there).
     const snapshot = store.getSnapshot()
     expect(snapshot.sessionId).toBe('s1')
@@ -783,7 +785,8 @@ describe('openFile (v0.12.0)', () => {
     store.setSession('s1')
     service.openFile({ sessionId: 's1', cwd: '/p' }, '/p/src/main.ts')
     const state = store.getSnapshot().state!
-    const tab = allLeaves(state.splits).flatMap(l => l.tabs).find(t => t.type === 'editor')
+    // Find by path: the seeded files-window home tab is an editor tab too.
+    const tab = allLeaves(state.splits).flatMap(l => l.tabs).find(t => t.type === 'editor' && t.path !== undefined)
     expect(tab?.title).toBe('main.ts')
     expect(tab?.path).toBe('/p/src/main.ts')
     // Windows separators are handled too.
@@ -892,8 +895,9 @@ describe('tab meta (v0.12.0)', () => {
   })
 
   it('older persisted tabs (no meta) sanitize unchanged', () => {
-    const state = makeDefaultState(400, true, true)
-    const sanitized = sanitizeState(JSON.parse(JSON.stringify(state)))
+    const state = makeDefaultState(400, true, 'none')
+    const withTab = openTabInActivePane(state, { id: 'tab:old', type: 'git', title: 'Git' })
+    const sanitized = sanitizeState(JSON.parse(JSON.stringify(withTab)))
     const tabs = allLeaves(sanitized!.splits).flatMap(l => l.tabs)
     expect(tabs[0]?.meta).toBeUndefined()
   })
@@ -1030,5 +1034,91 @@ describe('independent CR follow-up fixes', () => {
       { kind: 'activate', cwd: '/work' },
       { kind: 'close', cwd: '/work' },
     ])
+  })
+
+  it('SIDEBAR_FEATURES snapshot and service version checks', () => {
+    expect(SIDEBAR_FEATURES).toContain('urlTarget')
+    expect(SIDEBAR_FEATURES).toContain('pluginSettings')
+    expect(SIDEBAR_FEATURES).toContain('tabLifecycle')
+    expect(SIDEBAR_FEATURES).toContain('badge')
+    expect(SIDEBAR_FEATURES).toContain('updateTab')
+    expect(SIDEBAR_FEATURES).toContain('openFile')
+    expect(SIDEBAR_FEATURES).toContain('targetedOpen')
+    expect(SIDEBAR_FEATURES).toContain('stateSubscription')
+    expect(SIDEBAR_FEATURES).toContain('tabMeta')
+    expect(SIDEBAR_SERVICE_VERSION).toMatch(/^\d+\.\d+\.\d+/)
+  })
+
+  it('registerFileViewer throws on duplicate id', () => {
+    const store = createSidebarStore()
+    const service = createBetterSidebarService(store)
+    service.registerFileViewer({ id: 'csv', exts: ['csv'], fetchStrategy: 'custom', component: () => null })
+    expect(() => service.registerFileViewer({ id: 'csv', exts: ['csv'], fetchStrategy: 'custom', component: () => null })).toThrow(/already registered/)
+  })
+
+  describe('free windows (v0.16.0)', () => {
+    it('openTab dedupe focuses a FLOATING tab by raising its window (no duplicate, no panel expansion)', () => {
+      const store = createSidebarStore()
+      const service = createBetterSidebarService(store)
+      service.registerTab({ id: 'singleton', title: 'S', dedupeKey: () => 'singleton', component: () => null })
+      store.setSession('s1')
+      service.openTab({ type: 'singleton', title: 'S' })
+      // Float the singleton out, then float a second tab above it and
+      // collapse the panel — the focus must raise the window in place
+      // without reopening a tab or expanding anything.
+      store.reduce(s => floatTab(s, 'singleton', 100, 100))
+      service.openTab({ type: 'singleton', title: 'S' })
+      store.reduce(s => floatTab(s, (s.splits as { tabs: Array<{ id: string }> }).tabs[0]!.id, 100, 100))
+      const before = store.getSnapshot().state!
+      expect(before.floats).toHaveLength(2)
+      store.reduce(s => ({ ...s, panelOpen: false }))
+      service.openTab({ type: 'singleton', title: 'S' })
+      const after = store.getSnapshot().state!
+      // Raised to the top, not duplicated.
+      expect(after.floats).toHaveLength(2)
+      expect(after.floats.at(-1)!.tab.type).toBe('singleton')
+      // The panel stays collapsed (a floating tab is already in sight).
+      expect(after.panelOpen).toBe(false)
+      expect(allLeaves(after.splits).some(l => l.tabs.some(t => t.type === 'singleton'))).toBe(false)
+    })
+
+    it('closeTab on a floating tab closes it WITH the window and fires onClose', () => {
+      const store = createSidebarStore()
+      const service = createBetterSidebarService(store)
+      const onClose = vi.fn()
+      service.registerTab({ id: 'notes', title: 'Notes', single: true, onClose, component: () => null })
+      store.setSession('s1')
+      service.openTab({ type: 'notes', title: 'Notes' })
+      store.reduce(s => floatTab(s, 'notes', 50, 50))
+      expect(store.getSnapshot().state!.floats).toHaveLength(1)
+      service.closeTab('notes', { sessionId: 's1' })
+      const after = store.getSnapshot().state!
+      expect(after.floats).toHaveLength(0)
+      expect(onClose).toHaveBeenCalledTimes(1)
+      // Unknown ids stay a strict no-op.
+      service.closeTab('notes')
+      expect(store.getSnapshot().state).toBe(after)
+    })
+
+    it('activateTab on a floating tab raises the window and fires onActivate', () => {
+      const store = createSidebarStore()
+      const service = createBetterSidebarService(store)
+      const onActivate = vi.fn()
+      service.registerTab({ id: 'notes', title: 'Notes', single: true, onActivate, component: () => null })
+      store.setSession('s1')
+      service.openTab({ type: 'notes', title: 'Notes' })
+      service.openTab({ type: 'notes', title: 'Notes' })
+      store.reduce(s => floatTab(s, 'notes', 50, 50))
+      store.reduce(s => floatTab(s, (s.splits as { tabs: Array<{ id: string }> }).tabs[0]!.id, 60, 60))
+      const before = store.getSnapshot().state!
+      expect(before.floats).toHaveLength(2)
+      expect(before.floats.at(-1)!.tab.type).not.toBe('notes')
+      service.activateTab('notes')
+      const after = store.getSnapshot().state!
+      expect(after.floats.at(-1)!.tab.type).toBe('notes')
+      // Two activations total: the second openTab's dedupe focus (before the
+      // float) plus THIS explicit activateTab — both legitimate focuses.
+      expect(onActivate).toHaveBeenCalledTimes(2)
+    })
   })
 })

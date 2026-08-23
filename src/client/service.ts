@@ -22,8 +22,8 @@
 import type { ReactNode } from 'react'
 import type { Context } from '../context-types.ts'
 import {
-  activateTab as activateTabReducer, allLeaves, closeTab as closeTabReducer, leafWithTab,
-  openTabInActivePane, patchTab, tabOpenIn, togglePanel, treeOf,
+  activateTab as activateTabReducer, allLeaves, closeTab as closeTabReducer, closeFloatByTab, floatWithTab,
+  leafWithTab, openTabInActivePane, patchTab, raiseFloat, tabOpenIn, togglePanel, treeOf,
   type SidebarSnapshot, type SidebarState, type SidebarStore, type SidebarTab,
 } from './state.ts'
 import { isNarrowWidth } from './breakpoints.ts'
@@ -48,14 +48,32 @@ export type { SessionScope } from './api.ts'
 export type { SidebarPrefs } from '../prefs-shared.ts'
 
 /** The row control a declarative setting renders as in the settings popup. */
-export type SidebarSettingToggleType = 'switch' | 'text' | 'number'
+export type SidebarSettingToggleType = 'switch' | 'text' | 'number' | 'select'
+
+/** One option of a `type: 'select'` setting row. */
+export interface SidebarSettingSelectOption {
+  /** The value written to the setting key when this option is picked
+   *  (JSON-serializable: string / number / boolean). */
+  value: string | number | boolean
+  /** Option title (i18n friendly: string or () => string). */
+  title: string | (() => string)
+  /** Option description (i18n friendly); rendered under the title in the
+   *  icon dropdown. */
+  desc?: string | (() => string)
+  /** Option icon: when ANY option declares one, the dropdown renders
+   *  big-icon option cards and the closed control shows the selected
+   *  option's icon too; without icons both are a single line of text. */
+  icon?: ReactNode | ((size: number) => ReactNode)
+}
 
 /** One declarative setting of a tab/viewer, rendered as a nested row in the
  *  Side card settings page (e.g. the Subagent page's "auto-open when a
  *  subagent appears" switch, or the terminal's custom font rows). `type`
  *  selects the control: 'switch' (default) renders the custom switch,
  *  'text' a free-form input committed on blur/Enter, 'number' a numeric
- *  input clamped to `min`/`max`. */
+ *  input clamped to `min`/`max`, 'select' a dropdown over the declared
+ *  `options` (single-pick writes the option's value; `multi: true` writes
+ *  the array of picked values and defaults to false). */
 export interface SidebarSettingToggle {
   /** The SidebarPrefs field this toggle reads and writes ('autoOpenSubagent'). */
   key: string
@@ -73,6 +91,11 @@ export interface SidebarSettingToggle {
   placeholder?: string
   /** Unit suffix rendered after the input (e.g. 'px' for a size row). */
   unit?: string
+  /** Options of a `type: 'select'` row. */
+  options?: readonly SidebarSettingSelectOption[]
+  /** Whether a `type: 'select'` row allows picking several options (the
+   *  stored value is then an array of option values); defaults to false. */
+  multi?: boolean
 }
 
 /** Props of a descriptor's custom settings panel (`settings.render`). */
@@ -240,6 +263,33 @@ export interface FileViewerProps {
   mediaUrl?: string
   /** custom load() return value (fetchStrategy='custom'). */
   customData?: unknown
+  /** Internal (built-in text editor): 'host' asks the viewer to skip its own
+   *  toolbar row — the editor host's merged-mode header renders it instead,
+   *  fed through the two callbacks below. Viewers that ignore these fields
+   *  render exactly as before. */
+  toolbar?: 'self' | 'host'
+  /** Internal: the viewer reports its toolbar state (mode/dirty/save). */
+  onToolbarState?: (state: EditorToolbarState) => void
+  /** Internal: the viewer registers its toolbar commands on mount (null on
+   *  unmount). */
+  onToolbarControls?: (controls: EditorToolbarControls | null) => void
+}
+
+/** The toolbar state a text editor reports to the host's merged-mode header. */
+export interface EditorToolbarState {
+  /** Whether the preview/edit mode toggle applies (markdown/html). */
+  modes: boolean
+  mode: 'preview' | 'edit'
+  dirty: boolean
+  /** Whether saving applies (text content loaded). */
+  editable: boolean
+  saveState: 'idle' | 'saving' | 'saved' | 'failed'
+}
+
+/** The commands the host's merged-mode header sends back to the viewer. */
+export interface EditorToolbarControls {
+  setMode(mode: 'preview' | 'edit'): void
+  save(): void
 }
 
 /** Describes one file previewer (builtins register themselves too). */
@@ -420,7 +470,7 @@ export function matchUrlTarget(tabs: readonly TabDescriptor[], url: URL): TabDes
  * The plugin version this service instance reports. Keep in lockstep with
  * `package.json`'s version — `tests/service.spec.ts` asserts the pair.
  */
-export const SIDEBAR_SERVICE_VERSION = '0.12.2'
+export const SIDEBAR_SERVICE_VERSION = '0.16.0'
 
 /**
  * Monotonic capability list consumers use to gate new API usage (features
@@ -434,6 +484,10 @@ export const SIDEBAR_SERVICE_VERSION = '0.12.2'
  * - 'tabMeta': SidebarTab.meta (seeds, createTab, updateTab, persistence)
  * - 'pluginSettings': SidebarSettingsDeclaration.pluginToggles/render
  * - 'urlTarget' (v0.13.0): TabDescriptor.urlTarget (external-link claims)
+ * - 'settingSelect': SidebarSettingToggle type 'select' (options/multi)
+ * - 'floatWindows' (v0.16.0): tabs float as free windows — openTab's dedupe/
+ *   id focus targets RAISE the floating window (never duplicate the tab or
+ *   expand panels), closeTab on a floating tab closes it with its window.
  */
 export const SIDEBAR_FEATURES = [
   'badge',
@@ -445,6 +499,8 @@ export const SIDEBAR_FEATURES = [
   'tabMeta',
   'pluginSettings',
   'urlTarget',
+  'settingSelect',
+  'floatWindows',
 ] as const
 
 /** Run one plugin callback; a throw is logged and never breaks the caller. */
@@ -599,6 +655,7 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
       const dedupeKey = descriptor.dedupeKey ?? (descriptor.single === true ? () => descriptor.id : undefined)
       const key = dedupeKey?.(tab)
       const inputTabs = allLeaves(state.splits).concat(allLeaves(state.bottomSplits)).flatMap(leaf => leaf.tabs)
+        .concat(state.floats.map(f => f.tab))
       const existedByKey = key !== undefined
         && inputTabs.some(candidate => candidate.type === tab.type && dedupeKey!(candidate) === key)
       const existedById = tabOpenIn(state, tab.id)
@@ -623,11 +680,23 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
       } else {
         // A focus happened: resolve the tab that is actually active now and
         // report THAT to onActivate (never the caller's un-inserted seed).
+        // The pool covers free windows too — a floating instance focuses by
+        // raising, and the callback must see the real (patched) tab.
         const candidates = allLeaves(landed.splits).concat(allLeaves(landed.bottomSplits)).flatMap(leaf => leaf.tabs)
+          .concat(landed.floats.map(f => f.tab))
         activated = key !== undefined
           ? candidates.find(candidate => candidate.type === tab.type && dedupeKey!(candidate) === key)
           : candidates.find(candidate => candidate.id === tab.id)
         activated ??= tab
+      }
+      // A CONTENT open that focuses an existing FLOATING tab is already in
+      // sight (free windows render regardless of panel state): expanding a
+      // panel for it would point the user at a pane the content is not in.
+      if (
+        !isCreation
+        && floatWithTab(landed, activated?.id ?? tab.id) !== undefined
+      ) {
+        return landed
       }
       // A CONTENT open (file / browser) must land in sight: when the panel
       // hosting the landing pane is collapsed, expand it. On narrow
@@ -676,6 +745,12 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
       // Unknown tab ids are a strict no-op: no state churn, no notify, no
       // pointless localStorage rewrite (mirrors updateTab's short-circuit).
       if (!tabOpenIn(state, tabId)) return state
+      // A floating tab closes WITH its window — the float is the tab's pane.
+      const float = floatWithTab(state, tabId)
+      if (float !== undefined) {
+        closed = float.tab
+        return closeFloatByTab(state, tabId)
+      }
       const paneId = findPaneIdOf(state, tabId)
       const leaf = leafWithTab(state[treeOf(state, paneId)], tabId)
       closed = leaf?.tabs.find(tab => tab.id === tabId)
@@ -712,6 +787,12 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
     store.reduce((state) => {
       // Unknown tab ids are a strict no-op (no state churn / notify).
       if (!tabOpenIn(state, tabId)) return state
+      // A floating tab "activates" by raising its window — no pane switch.
+      const float = floatWithTab(state, tabId)
+      if (float !== undefined) {
+        activated = float.tab
+        return raiseFloat(state, float.id)
+      }
       const paneId = findPaneIdOf(state, tabId)
       const leaf = leafWithTab(state[treeOf(state, paneId)], tabId)
       activated = leaf?.tabs.find(tab => tab.id === tabId)
@@ -773,6 +854,10 @@ function applyDedupe(state: SidebarState, tab: SidebarTab, descriptor: TabDescri
       const existing = leaf.tabs.find(t => t.type === tab.type && dedupeKey!(t) === key)
       if (existing !== undefined) return activateTabReducer(state, leaf.id, existing.id)
     }
+    // A floating instance focuses by raising its window (no duplicate tab,
+    // no panel expansion — the window is the tab's pane).
+    const floated = state.floats.find(f => f.tab.type === tab.type && dedupeKey!(f.tab) === key)
+    if (floated !== undefined) return raiseFloat(state, floated.id)
   }
   return openTabInActivePane(state, tab)
 }

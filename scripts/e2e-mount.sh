@@ -16,7 +16,9 @@
 #   DSH_CMD        dsh 命令；缺省 PATH 上的 `dsh`，回退 npx 拉官方包
 #   TARBALL        插件 tarball；缺省仓库根 dsh-better-sidebar-*.tgz（须已 pack）
 #   PORT           固定端口（默认 0 = OS 分配，从日志解析 URL）
-#   DSH_HOME_BASE  覆盖 scratch 根目录（默认 mktemp -d）
+#   DSH_HOME_BASE  覆盖 scratch 根目录（默认系统临时目录）。脚本始终在其下
+#                  新建本调用拥有的独立子目录，只写入/删除该子目录；调用方
+#                  提供的目录本身（可能是真实 ~/.dsh）绝不写入或删除。
 #   KEEP_HOME      非空时保留 scratch home（调试用）
 #
 # 退出码 = playwright 的退出码；服务器与 scratch 目录由 trap 兜底清理。
@@ -49,16 +51,25 @@ if ! command -v "$DSH_CMD" >/dev/null 2>&1; then
   fi
 fi
 
-# tarball 解析
+# tarball 解析（多个候选时取 mtime 最新——`ls | head -1` 的字典序会拿到
+# 旧版本号的历史 tarball，把冒烟挂到过期产物上）
 if [ -z "$TARBALL" ]; then
-  TARBALL="$(ls "$ROOT"/dsh-better-sidebar-*.tgz 2>/dev/null | head -1 || true)"
+  TARBALL="$(ls -t "$ROOT"/dsh-better-sidebar-*.tgz 2>/dev/null | head -1 || true)"
+  COUNT="$(ls "$ROOT"/dsh-better-sidebar-*.tgz 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$COUNT" -le 1 ] || warn "发现 $COUNT 个 tarball，按 mtime 选用最新：$(basename "$TARBALL")（建议清理其余）"
 fi
 [ -n "$TARBALL" ] && [ -f "$TARBALL" ] || die "找不到 tarball（TARBALL 或 \$ROOT/dsh-better-sidebar-*.tgz）——先运行 pnpm build && pnpm pack"
 TARBALL="$(cd "$(dirname "$TARBALL")" && pwd)/$(basename "$TARBALL")"
 say "tarball: $TARBALL"
 
-# scratch home（每次全新，绝不触碰真实 ~/.dsh）
-SCRATCH="${DSH_HOME_BASE:-$(mktemp -d /tmp/dsh-e2e-mount.XXXXXX)}"
+# scratch home（每次全新，绝不触碰真实 ~/.dsh）：调用方给了 DSH_HOME_BASE
+# 时，只在其下新建本调用拥有的子目录并只删除该子目录；缺省时直接用系统
+# 临时目录。
+if [ -n "${DSH_HOME_BASE:-}" ]; then
+  SCRATCH="$(mktemp -d "$DSH_HOME_BASE/dsh-e2e-mount.XXXXXX")"
+else
+  SCRATCH="$(mktemp -d /tmp/dsh-e2e-mount.XXXXXX)"
+fi
 export DSH_HOME="$SCRATCH/home"
 WORKSPACE_DIR="$SCRATCH/workspace"
 LOG_DIR="$SCRATCH"
