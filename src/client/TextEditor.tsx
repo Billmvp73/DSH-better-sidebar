@@ -336,7 +336,10 @@ export function TextEditor(props: FileViewerProps) {
               the active locale on live switches. */}
           <MarkdownText
             text={draft ?? content ?? ''}
-            codeLabels={{ copyLabel: t('copy'), copiedLabel: t('copied') }}
+            labels={{
+              code: { copyLabel: t('copy'), copiedLabel: t('copied') },
+              footnotes: t('markdownFootnotes'),
+            }}
           />
         </div>
       )}
