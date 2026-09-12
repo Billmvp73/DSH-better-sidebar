@@ -6,14 +6,14 @@
  * first use of the feature that needs it (see src/client/chunk-loader.ts).
  *
  * Caching contract: every response carries `cache-control: no-cache` plus an
- * ETag (content hash, memoized per file by mtime/size) and honors
+ * ETag (hash of the bytes served, computed per request) and honors
  * If-None-Match — the browser revalidates each fetch, but a 304 avoids
  * re-downloading multi-MB chunks that did not change (page refresh, HMR
  * re-activation). Same browser-trust fence as every other /sidebar route;
  * only allowlisted chunk names are servable (no path traversal).
  */
 import { createHash } from 'node:crypto'
-import { stat, readFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context, SidebarHttpRequest, SidebarHttpResponse } from './context-types.ts'
@@ -30,32 +30,22 @@ function shortHash(input: string | Buffer): string {
   return createHash('sha1').update(input).digest('hex').slice(0, 12)
 }
 
-interface ChunkEtag {
-  mtimeMs: number
-  size: number
-  etag: string
-}
-
-/** ETag memo: recompute the content hash only when the file's stat changed. */
-const etags = new Map<string, ChunkEtag>()
-
 /**
- * The chunk file's ETag (quoted hash), or undefined when the file is
- * missing. Hash is recomputed only when mtime/size changed (hashing a
- * multi-MB chunk per request is wasteful).
+ * The chunk file's bytes with their ETag (quoted content hash), or undefined
+ * when the file is missing or unreadable.
+ *
+ * The hash comes from the bytes this call read, never from a memo keyed on
+ * `stat`: `mtime` carries at best millisecond resolution, so a rebuild emitting
+ * the same byte count within one tick of the previous write leaves `mtime` and
+ * `size` both unchanged and every browser holding the old ETag would 304 onto
+ * the stale chunk. The 200 path had to read the file anyway; only a
+ * revalidation hit pays the extra read, on a route a session touches a handful
+ * of times.
  */
-async function etagOf(name: ChunkName, chunkDir: string): Promise<string | undefined> {
-  const path = join(chunkDir, `client-${name}.js`)
-  const key = `${chunkDir}:${name}`
+async function chunkOf(name: ChunkName, chunkDir: string): Promise<{ body: Buffer; etag: string } | undefined> {
   try {
-    const info = await stat(path)
-    const memo = etags.get(key)
-    if (memo !== undefined && memo.mtimeMs === info.mtimeMs && memo.size === info.size) {
-      return memo.etag
-    }
-    const etag = `"${shortHash(await readFile(path))}"`
-    etags.set(key, { mtimeMs: info.mtimeMs, size: info.size, etag })
-    return etag
+    const body = await readFile(join(chunkDir, `client-${name}.js`))
+    return { body, etag: `"${shortHash(body)}"` }
   } catch {
     return undefined
   }
@@ -89,33 +79,27 @@ export function createBundleRouteHandler(
       res.end('not found')
       return
     }
-    const etag = await etagOf(name, chunkDir)
-    if (etag === undefined) {
-      // Registered name but unreadable (bundle not built yet): loud 404.
+    const chunk = await chunkOf(name, chunkDir)
+    if (chunk === undefined) {
+      // Registered name but unreadable (bundle not built yet, or a read that
+      // raced a rebuild): loud 404.
       res.writeHead(404)
       res.end('not found')
       return
     }
-    if (req.headers['if-none-match'] === etag) {
+    if (req.headers['if-none-match'] === chunk.etag) {
       // Revalidation hit: unchanged chunk, no body — avoids re-downloading
       // multi-MB scripts on page refresh / HMR re-activation.
-      res.writeHead(304, { 'cache-control': 'no-cache', etag })
+      res.writeHead(304, { 'cache-control': 'no-cache', etag: chunk.etag })
       res.end()
       return
     }
-    try {
-      const body = await readFile(join(chunkDir, `client-${name}.js`))
-      res.writeHead(200, {
-        'content-type': 'text/javascript; charset=utf-8',
-        'cache-control': 'no-cache',
-        etag,
-      })
-      res.end(body)
-    } catch {
-      // Read raced a delete/rebuild between the stat and the read.
-      res.writeHead(404)
-      res.end('not found')
-    }
+    res.writeHead(200, {
+      'content-type': 'text/javascript; charset=utf-8',
+      'cache-control': 'no-cache',
+      etag: chunk.etag,
+    })
+    res.end(chunk.body)
   }
 }
 

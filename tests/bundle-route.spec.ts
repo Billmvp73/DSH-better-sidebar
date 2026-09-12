@@ -95,6 +95,27 @@ describe('/sidebar/bundle route', () => {
     }
   })
 
+  it('rotates the ETag for same-size rewrites inside one millisecond', async () => {
+    const { handler, dir, cleanup } = setup()
+    try {
+      // The ETag must follow the bytes, not the file's stat: mtime carries at
+      // best millisecond resolution, so a same-size rewrite inside one tick is
+      // invisible to mtime/size and the browser would 304 onto the stale chunk.
+      // Ten back-to-back rewrites put several writes inside one millisecond.
+      let previous: string | undefined
+      for (const digit of ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']) {
+        writeFileSync(join(dir, 'client-editor.js'), `window.__ModuleLoader__ && ${digit};`)
+        const res = fakeRes()
+        await handler(req('GET', '/sidebar/bundle/editor.js', previous === undefined ? {} : { 'if-none-match': previous }), res as unknown as ServerResponse)
+        expect(res.status).toBe(200)
+        expect(res.body).toContain(`&& ${digit}`)
+        previous = res.headers.etag!
+      }
+    } finally {
+      cleanup()
+    }
+  })
+
   it('rejects unknown chunk names (including traversal attempts) with 404', async () => {
     const { handler, cleanup } = setup()
     try {

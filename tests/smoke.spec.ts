@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve as resolvePath } from 'node:path'
-import { SettingsConflictError, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { SettingsConflictError, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { apply, mediaTypeForPath } from '../src/index.ts'
 import * as git from '../src/git.ts'
 import { listDirectory } from '../src/fs-tree.ts'
@@ -212,7 +212,10 @@ describe('host plugin smoke', () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME
       else process.env.HOME = previousHome
-      rmSync(home, { recursive: true, force: true })
+      // disposeAll() signals the shell but does not await its exit, so bash can
+      // still write ~/.bash_history into this HOME while the tree is removed
+      // (ENOTEMPTY under load). Retry until the exiting shell releases it.
+      rmSync(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 })
     }
   })
 
@@ -475,7 +478,9 @@ describe('side card settings routes', () => {
         const entry = namespaces.get(ns)
         if (entry === undefined) throw new Error(`settings namespace "${ns}" is not registered`)
         if (expectedRevision !== undefined && expectedRevision !== entry.revision) {
-          throw new SettingsConflictError(settingsNamespace(ns), expectedRevision, entry.revision)
+          // The double's namespaces are plain strings; the error's parameter is
+          // the branded type the real provider validated on the way in.
+          throw new SettingsConflictError(ns as SettingsNamespace, expectedRevision, entry.revision)
         }
         entry.value = { ...entry.value, ...patch }
         entry.revision += 1
