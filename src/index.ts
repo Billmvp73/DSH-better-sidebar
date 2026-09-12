@@ -468,8 +468,8 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
     }
   }
   ctx.inject(['settings'], (sctx) => {
-    // `dsh-settings` no longer exports a branding helper: `register`, `describe`,
-    // and `update` accept a namespace literal and validate it themselves.
+    // `register`, `describe`, and `update` take the namespace literal and
+    // validate it themselves; nothing brands it at this call site.
     const ns = SIDEBAR_PREFS_NS
     // The structural settings mirror types `schema` as unknown, so the
     // generic is not inferred here; the real service resolves it from the

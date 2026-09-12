@@ -478,8 +478,8 @@ describe('side card settings routes', () => {
         const entry = namespaces.get(ns)
         if (entry === undefined) throw new Error(`settings namespace "${ns}" is not registered`)
         if (expectedRevision !== undefined && expectedRevision !== entry.revision) {
-          // `dsh-settings` no longer exports a branding helper; the double
-          // brands its own literal the way the real provider's own callers do.
+          // The double's namespaces are plain strings; the error's parameter is
+          // the branded type the real provider validated on the way in.
           throw new SettingsConflictError(ns as SettingsNamespace, expectedRevision, entry.revision)
         }
         entry.value = { ...entry.value, ...patch }

@@ -98,8 +98,8 @@ describe('/sidebar/bundle route', () => {
   it('rotates the ETag for same-size rewrites inside one millisecond', async () => {
     const { handler, dir, cleanup } = setup()
     try {
-      // The ETag must follow the bytes, not the file's stat: mtime advances in
-      // whole milliseconds, so a same-size rewrite inside one millisecond is
+      // The ETag must follow the bytes, not the file's stat: mtime carries at
+      // best millisecond resolution, so a same-size rewrite inside one tick is
       // invisible to mtime/size and the browser would 304 onto the stale chunk.
       // Ten back-to-back rewrites put several writes inside one millisecond.
       let previous: string | undefined

@@ -35,11 +35,12 @@ function shortHash(input: string | Buffer): string {
  * when the file is missing or unreadable.
  *
  * The hash comes from the bytes this call read, never from a memo keyed on
- * `stat`: this filesystem's mtime advances in whole milliseconds, so a rebuild
- * emitting the same byte count within one millisecond of the previous write is
- * invisible to `mtime`/`size` and every browser would 304 onto the stale chunk.
- * The 200 path had to read the file anyway; only a revalidation hit pays the
- * extra read, on a route a session touches a handful of times.
+ * `stat`: `mtime` carries at best millisecond resolution, so a rebuild emitting
+ * the same byte count within one tick of the previous write leaves `mtime` and
+ * `size` both unchanged and every browser holding the old ETag would 304 onto
+ * the stale chunk. The 200 path had to read the file anyway; only a
+ * revalidation hit pays the extra read, on a route a session touches a handful
+ * of times.
  */
 async function chunkOf(name: ChunkName, chunkDir: string): Promise<{ body: Buffer; etag: string } | undefined> {
   try {
