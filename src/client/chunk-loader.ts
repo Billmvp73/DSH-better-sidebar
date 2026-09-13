@@ -22,9 +22,18 @@
  *    script; the official /plugins/<id>/client.js route cannot serve
  *    arbitrary file names, so the plugin's own host route serves the chunks),
  * 2. read the factory from the global registry,
- * 3. call it with a require that resolves the platform externals through
- *    `__DSH_MODULES__.import(spec)` — the seed-word branch, the one part of
+ * 3. call it with a require that resolves the platform externals through the
+ *    module system's `import(spec)` — the seed-word branch, the one part of
  *    the module system that is stable across versions.
+ *
+ * The module system itself is reached through the client plugin context: DSH
+ * 0.1.5 dropped the `window.__DSH_MODULES__` handoff slot and enrolls the
+ * kernel-built system as the `modules` Cordis service instead. It is provided
+ * by a sibling Loader entry, so a consumer reads it with `ctx.get('modules')`
+ * (the context proxy only walks a fiber's own ancestors) — hence the resolver
+ * {@link setChunkModuleResolver} the client entry installs per activation,
+ * called at first chunk open rather than at activation, since row order does
+ * not guarantee the service exists while this plugin applies.
  *
  * Caching contract (three layers, each with a failure path):
  * - In-memory: one in-flight promise per chunk, memoized until
@@ -73,14 +82,34 @@ export const CHUNK_EXTERNALS: readonly string[] = [
 /** Chunk script endpoint served by the plugin host half (src/bundle-route.ts). */
 const CHUNK_URL = (name: ChunkName): string => `/sidebar/bundle/${name}.js`
 
-/** The client module system surface this loader needs (window.__DSH_MODULES__). */
-interface ChunkModuleSystem {
+/** The client module system surface this loader needs (the `modules` service). */
+export interface ChunkModuleSystem {
   import(specifier: string): Promise<unknown>
 }
 
-/** Resolve the shell-installed module system (set before any plugin activates). */
+/** Resolves the client module system at chunk-load time; installed per activation. */
+export type ChunkModuleResolver = () => ChunkModuleSystem | undefined
+
+let moduleResolver: ChunkModuleResolver | undefined
+
+/**
+ * Install the module-system resolver for this activation (the client entry
+ * passes a `ctx.get('modules')` read). The returned disposer clears the slot
+ * only while this resolver is still the installed one, so a late disposal of
+ * the previous fiber cannot unplug the resolver of the current one (HMR).
+ * @param resolver - lazy resolver, called at each chunk open.
+ * @returns the disposer for this installation.
+ */
+export function setChunkModuleResolver(resolver: ChunkModuleResolver): () => void {
+  moduleResolver = resolver
+  return () => {
+    if (moduleResolver === resolver) moduleResolver = undefined
+  }
+}
+
+/** Resolve the enrolled module system, if this activation installed a resolver. */
 function moduleSystem(): ChunkModuleSystem | undefined {
-  return (globalThis as { __DSH_MODULES__?: ChunkModuleSystem }).__DSH_MODULES__
+  return moduleResolver?.()
 }
 
 /** The plugin-owned chunk factory registry the chunk scripts populate. */

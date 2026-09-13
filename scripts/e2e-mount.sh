@@ -143,7 +143,14 @@ for _ in $(seq 1 120); do
     tail -30 "$WEB_LOG" >&2 || true
     exit 1
   fi
-  if URL="$(grep -oE 'dsh web: http://127\.0\.0\.1:[0-9]+' "$WEB_LOG" | head -1 | awk '{print $3}')" && [ -n "$URL" ]; then
+  # The printed line carries the launch token (`?token=…`) since DSH 0.1.5,
+  # which fences /api; the origin drives navigation, the token is traded for
+  # the session cookie by the lane. An older build prints no token.
+  if LINE="$(grep -oE 'dsh web: http://127\.0\.0\.1:[0-9]+(/\?token=[A-Za-z0-9_-]+)?' "$WEB_LOG" | head -1)" && [ -n "$LINE" ]; then
+    FULL="${LINE##* }"
+    URL="${FULL%%/\?token=*}"
+    TOKEN=""
+    case "$FULL" in *'?token='*) TOKEN="${FULL#*\?token=}";; esac
     break
   fi
   sleep 1
@@ -153,7 +160,7 @@ say "dsh web 就绪：${URL}（pid ${SERVER_PID}）"
 
 # 步骤 5：运行无头渲染 lane
 say "运行 Playwright 无头渲染 lane..."
-DSH_E2E_URL="$URL" DSH_E2E_WORKSPACE="$WORKSPACE_DIR" \
+DSH_E2E_URL="$URL" DSH_E2E_TOKEN="${TOKEN:-}" DSH_E2E_WORKSPACE="$WORKSPACE_DIR" \
   pnpm exec playwright test ${GREP_FILTER:+--grep "$GREP_FILTER"}
 
 say "通过：插件挂载到真实 DSH 后无头渲染未崩溃"

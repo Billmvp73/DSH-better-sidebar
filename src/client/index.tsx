@@ -13,7 +13,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import type { Context } from '../context-types.ts'
 import { createSidebarStore } from './state.ts'
 import { createBetterSidebarService, matchUrlTarget } from './service.ts'
-import { resetChunks } from './chunk-loader.ts'
+import { resetChunks, setChunkModuleResolver } from './chunk-loader.ts'
 import { registerBuiltins } from './builtins/index.ts'
 import { Sidebar } from './Sidebar.tsx'
 import { RenderBoundary } from './RenderBoundary.tsx'
@@ -93,6 +93,15 @@ export function apply(ctx: Context): void {
     // registered by a previous fiber (HMR) and drop the in-memory load cache
     // so the next lazy open re-fetches the current chunk scripts.
     resetChunks()
+    // How the chunk loader reaches the client module system: DSH 0.1.5 removed
+    // the `window.__DSH_MODULES__` global and enrolls the kernel-built system
+    // as the `modules` service. It comes from a sibling Loader entry, so it is
+    // a `ctx.get` read rather than an injection, and the read happens at first
+    // chunk open — no row order is guaranteed while this plugin applies.
+    ctx.effect(
+      () => setChunkModuleResolver(() => ctx.get('modules')),
+      'dsh-better-sidebar: chunk module resolver',
+    )
     ctx.effect(() => {
       let disposed = false
       let root: Root | undefined
