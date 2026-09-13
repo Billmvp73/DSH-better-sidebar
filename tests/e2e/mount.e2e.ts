@@ -32,6 +32,17 @@ if (!BASE_URL) {
   throw new Error('DSH_E2E_URL is not set — boot a DSH web instance with the plugin mounted and point this lane at it (see scripts/e2e-mount.sh)')
 }
 
+/**
+ * The launch token DSH prints with its URL (0.1.5 fences `/api` behind it): a
+ * request carrying `?token=` gets a 303 that sets the session cookie, and both
+ * the seeding context and the page enter through that URL. Empty for a DSH
+ * build without the fence.
+ */
+const LAUNCH_TOKEN = process.env.DSH_E2E_TOKEN ?? ''
+
+/** Entry URL that mints the cookie; plain origin when no token is in play. */
+const ENTRY_URL = LAUNCH_TOKEN === '' ? BASE_URL : `${BASE_URL}/?token=${encodeURIComponent(LAUNCH_TOKEN)}`
+
 /** Workspace the sidebar renders against (created by the lane's seeding). */
 const WORKSPACE_PATH = process.env.DSH_E2E_WORKSPACE ?? join(tmpdir(), 'dsh-e2e-workspace')
 
@@ -55,9 +66,23 @@ let api: APIRequestContext
  *  through the host's unary RPC surface. */
 async function seedSession(): Promise<void> {
   mkdirSync(WORKSPACE_PATH, { recursive: true })
+  // Trade the launch token for the session cookie this context then carries on
+  // every /api post; without it the trust fence answers 401.
+  if (LAUNCH_TOKEN !== '') {
+    const entry = await api.get(ENTRY_URL)
+    expect(entry.ok(), `token handshake: ${entry.status()}`).toBe(true)
+  }
   writeFileSync(join(WORKSPACE_PATH, SEEDED_FILE), 'hello from the mount lane\n')
-  const workspace = await api.post(`${BASE_URL}/api/workspace.create`, {
-    data: { type: 'client-request', rpcId: 'e2e-workspace', method: 'workspace.create', payload: { path: WORKSPACE_PATH } },
+  // Wire shape of the unary Remote surface: `/api/<namespace>/<method>`, the
+  // envelope's `method` repeating that endpoint, and one `args` object keyed by
+  // the descriptor's parameter names (`request` for both calls below).
+  const workspace = await api.post(`${BASE_URL}/api/workspace/create`, {
+    data: {
+      type: 'client-request',
+      rpcId: 'e2e-workspace',
+      method: 'workspace/create',
+      payload: { args: { request: { path: WORKSPACE_PATH } } },
+    },
   })
   expect(workspace.ok(), `workspace.create: ${workspace.status()} ${await workspace.text()}`).toBe(true)
   const workspaceBody = (await workspace.json()) as {
@@ -66,8 +91,13 @@ async function seedSession(): Promise<void> {
   expect(workspaceBody.result.ok).toBe(true)
   const workspaceId = (workspaceBody.result as { value: { workspace: { workspaceId: string } } }).value.workspace.workspaceId
 
-  const session = await api.post(`${BASE_URL}/api/session.create`, {
-    data: { type: 'client-request', rpcId: 'e2e-session', method: 'session.create', payload: { workspaceId } },
+  const session = await api.post(`${BASE_URL}/api/session/create`, {
+    data: {
+      type: 'client-request',
+      rpcId: 'e2e-session',
+      method: 'session/create',
+      payload: { args: { request: { workspaceId } } },
+    },
   })
   expect(session.ok(), `session.create: ${session.status()} ${await session.text()}`).toBe(true)
 }
@@ -91,7 +121,7 @@ test('plugin mounts into the DSH shell and survives a built-in tab sweep', async
 
   // Load the shell. The app renders into #root; the plugin appends its own
   // [data-dsh-better-sidebar] host once its client half activates.
-  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+  await page.goto(ENTRY_URL, { waitUntil: 'domcontentloaded' })
   await expect(page.locator('#root > *')).not.toHaveCount(0, { timeout: 90_000 })
   const sidebar = page.locator('[data-dsh-better-sidebar]')
   await expect(sidebar).toBeAttached({ timeout: 90_000 })

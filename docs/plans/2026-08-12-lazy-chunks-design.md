@@ -72,7 +72,7 @@ chunk 脚本**不经过** `window.__ModuleLoader__` / `ClientModuleSystem.import
 
 - chunk 加载/执行/物化失败 → 视图级错误 + 重试 UI(`css.editorError` + `css.terminalRetry`),面板其余部分不受影响;
 - host 旧版本无 `/sidebar/bundle` 路由(404) → 同样的错误 + 重试,升级 host 后重试即可;
-- `window.__DSH_MODULES__` 缺失(异常环境) → 明确报错,不触网;
+- 模块系统缺失(异常环境;DSH 0.1.5 起为 `ctx.get('modules')`,见 v4) → 明确报错,不触网;
 - chunk 注册 id 恒定 `dsh-better-sidebar/<name>`,两渠道共用(每页只活一个渠道——双渠道并存本就双挂载,属既有破损组合);
 - 跨 chunk 复用:`t()`/`api.ts`/`SandboxStatusBar`/`clsx`/`sidebar.module.css` 等无状态小模块允许在各 chunk 内联(几十 KB 级重复),避免 chunk→主 bundle require 的脆弱耦合;
 - CSS:`sidebar.module.css` 的 tagId 与官方渠道核心一致 → 幂等跳过注入;registry 渠道会多注入一份同内容样式(数据标签差异,无功能影响);xterm.css/Univer.css 随各自 chunk 注入。
@@ -85,4 +85,5 @@ chunk 脚本**不经过** `window.__ModuleLoader__` / `ClientModuleSystem.import
 - `lazy-chunk.tsx` 内部渲染用 `ComponentType<any>` 状态成员规避 React 18 createElement 泛型重载限制(仅内部一处显式 any)。
 - **v2(运行时修复)**:最初实现经 `window.__ModuleLoader__.load({id})` 注册 chunk factory、再 `__DSH_MODULES__.import(id)` 物化——真实环境报 `client-modules: cannot resolve "dsh-better-sidebar/terminal"`(某 DSH 版本的 import() 不解析已注册的非 boot 图 id)。改为全局 factory 注册表(`globalThis.__dshChunks__`) + 自定义 externals require(seed 分支),彻底不依赖模块系统的 factory 解析行为;`resetChunks` 不再需要 invalidate。
 - **v3(运行时修复)**:terminal 懒包装把整个 `TabComponentProps` 原样透传,但 `TerminalView` 的 props 是 `{ scope, tabId, store }` 而 `TabComponentProps` 只有 `tab` 对象、没有 `tabId` → `tabId` 为 undefined → `isAgentTabId` 里 `undefined.startsWith` 崩溃(`dsh-better-sidebar: Cannot read properties of undefined (reading 'startsWith')`)。修复:descriptor 显式映射 `tabId={tab.id}`,懒包装的 props 泛型 = TerminalView 真实签名(`{ scope, tabId, store }`);回归测试钉住映射(lazy-chunk.spec.tsx)。**教训:懒包装的 props 泛型必须等于目标组件真实 props,而非描述符 props 全集**。
+- **v4(DSH 0.1.5 适配)**:上游 `refactor(client): close module loader bootstrap loop` 删掉了 `window.__DSH_MODULES__` 交接槽,模块系统改为 client 根上的 `modules` cordis 服务 → 真实环境开编辑器报 `chunk "editor": client module system unavailable`。修复:client 半激活时装入 resolver(`setChunkModuleResolver(() => ctx.get('modules'))`),chunk-loader 在首次开 chunk 时才读——该服务由兄弟 Loader entry 提供,`ctx.<name>` 代理只走本 fiber 祖先链、读不到它,且激活顺序不保证。回归测试钉住"读取发生在加载时而非装入时"。
 - **v2 附加**:bundled 产物经真实 `ClientModuleSystem`(带真实 react seed)端到端验证——5 个 chunk 均能物化出真实 React 组件;产物契约由 `tests/chunk-artifact.spec.ts` 长期钉住(脚本执行赋值槽位 + factory 可被 externals require 物化)。

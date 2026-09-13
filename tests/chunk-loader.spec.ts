@@ -8,9 +8,10 @@
  * - externals resolve through the module system's seed branch (the stable,
  *   version-independent part), once per page,
  * - resetChunks drops the cache and the externals memo (HMR).
- * The production path runs against a fake `window.__DSH_MODULES__` and a
- * stub script loader that simulates the executed chunk script by assigning
- * the plugin-owned global factory registry.
+ * The production path runs against a fake module system installed through
+ * {@link setChunkModuleResolver} (the `ctx.get('modules')` read the client
+ * entry performs) and a stub script loader that simulates the executed chunk
+ * script by assigning the plugin-owned global factory registry.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import './browser-globals.ts'
@@ -19,24 +20,30 @@ import {
   loadChunk,
   registerChunkForTests,
   resetChunks,
+  setChunkModuleResolver,
   setChunkScriptLoaderForTests,
 } from '../src/client/chunk-loader.ts'
 import type { ChunkExports } from '../src/client/chunk-loader.ts'
 
-interface FakeModuleSystem {
-  import: ReturnType<typeof vi.fn>
+/** A module system whose seed branch answers every specifier. */
+function fakeModuleSystem() {
+  return { import: vi.fn(async (specifier: string) => ({ seed: specifier })) }
 }
 
+type FakeModuleSystem = ReturnType<typeof fakeModuleSystem>
+
+/** Disposer of the resolver the current test installed (cleared per test). */
+let disposeResolver: (() => void) | undefined
+
 function installModuleSystem(): FakeModuleSystem {
-  const fake: FakeModuleSystem = {
-    import: vi.fn(async (specifier: string) => ({ seed: specifier })),
-  }
-  ;(globalThis as Record<string, unknown>).__DSH_MODULES__ = fake
+  const fake = fakeModuleSystem()
+  disposeResolver = setChunkModuleResolver(() => fake)
   return fake
 }
 
 function removeModuleSystem(): void {
-  delete (globalThis as Record<string, unknown>).__DSH_MODULES__
+  disposeResolver?.()
+  disposeResolver = undefined
 }
 
 /** The global registry the chunk scripts populate (mirror of chunk-loader). */
@@ -166,6 +173,29 @@ describe('production path (script injection + global registry + externals requir
     setChunkScriptLoaderForTests(async (src) => { loaded.push(src) })
     await expect(loadChunk('editor')).rejects.toThrow('client module system unavailable')
     expect(loaded).toEqual([])
+  })
+
+  it('reads the module system at chunk-load time, not at resolver installation', async () => {
+    // The `modules` service is provided by a sibling Loader entry, so it may
+    // still be absent while this plugin activates and installs the resolver.
+    let live: FakeModuleSystem | undefined
+    disposeResolver = setChunkModuleResolver(() => live)
+    setChunkScriptLoaderForTests(async () => { simulateScript('editor', () => ({ TextEditor: 'text-editor' })) })
+    await expect(loadChunk('editor')).rejects.toThrow('client module system unavailable')
+    live = fakeModuleSystem()
+    await expect(loadChunk('editor')).resolves.toEqual({ TextEditor: 'text-editor' })
+    expect(live.import).toHaveBeenCalledTimes(CHUNK_EXTERNALS.length)
+  })
+
+  it('a stale disposer leaves the resolver of the newer activation installed', async () => {
+    // HMR order is not guaranteed: the previous fiber may dispose after the new
+    // one installed its own resolver, and must not unplug it.
+    const stale = setChunkModuleResolver(() => fakeModuleSystem())
+    const current = installModuleSystem()
+    stale()
+    setChunkScriptLoaderForTests(async () => { simulateScript('editor', () => ({ TextEditor: 'text-editor' })) })
+    await expect(loadChunk('editor')).resolves.toEqual({ TextEditor: 'text-editor' })
+    expect(current.import).toHaveBeenCalledTimes(CHUNK_EXTERNALS.length)
   })
 
   it('resetChunks drops the cache and the externals memo (HMR re-activation)', async () => {

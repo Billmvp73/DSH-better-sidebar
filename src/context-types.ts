@@ -411,6 +411,17 @@ export interface SidebarAgent {
   }
 }
 
+/**
+ * The client module system face (`@deepseek-ai/dsh-client-modules`, enrolled
+ * as the `modules` service since DSH 0.1.5, which dropped the
+ * `window.__DSH_MODULES__` handoff slot). Only the seed-word resolution the
+ * lazy chunk loader needs is mirrored here. Client side only.
+ */
+export interface SidebarClientModules {
+  /** Resolve one module specifier (the loader passes platform externals only). */
+  import(specifier: string): Promise<unknown>
+}
+
 declare module 'cordis' {
   interface Context {
     webServer: SidebarWebServer
@@ -438,6 +449,12 @@ declare module 'cordis' {
      * resolve the caller the jobs fence compares against).
      */
     agents: SidebarAgentsService
+    /**
+     * The client module system (`ctx.get('modules')`; a sibling Loader entry
+     * provides it, so it is never a declared injection here). The lazy chunk
+     * loader resolves its platform externals through it.
+     */
+    modules: SidebarClientModules
     /**
      * The client-side sidebar registry: external plugins register tab types
      * and file previewers here. Provided by the client half (see
